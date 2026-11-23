@@ -1,0 +1,169 @@
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { supportHeightWrapper } from './walk.js';
+import { bounds,visibleTerrainHeight } from './terrain-data.js';
+import { footprint } from '../core/geometry.js';
+import { isPerimeterPiece } from './perimeter.js';
+
+const groundClearance=1.4;
+
+export class KingdomCamera {
+  constructor(canvas,camera) {
+    this.canvas=canvas;this.camera=camera;
+    // Keep the requested orbit pose separate from the terrain-adjusted view.
+    this.orbitCamera=camera.clone();
+    this.orbit=new OrbitControls(this.orbitCamera,canvas);
+    this.orbit.enableDamping=true;
+    this.orbit.dampingFactor=.13;
+    this.orbit.minDistance=16;
+    this.orbit.maxDistance=295;
+    this.orbit.maxPolarAngle=Math.PI*.486;
+    this.orbit.panSpeed=.82;
+    this.orbit.screenSpacePanning=false;
+    this.orbit.zoomSpeed=.69;
+    this.orbit.mouseButtons={LEFT:THREE.MOUSE.ROTATE,MIDDLE:THREE.MOUSE.DOLLY,RIGHT:THREE.MOUSE.PAN};
+    this.mode='orbit';this.keys=new Set();
+    this.position=new THREE.Vector3(-.6,0,9);
+    this.yaw=0;this.pitch=-.04;
+    this.manual=null;
+    this.overview();
+    canvas.addEventListener('pointerdown',event=>{
+      if(this.mode!=='walk'||event.button!==0)return;
+      this.manual={x:event.clientX,y:event.clientY};
+    });
+    document.addEventListener('pointerup',()=>this.manual=null);
+    document.addEventListener('pointercancel',()=>this.manual=null);
+    document.addEventListener('mousemove',event=>{
+      if(this.mode!=='walk')return;
+      if(document.pointerLockElement===canvas)this.rotate(event.movementX,event.movementY);
+    });
+    canvas.addEventListener('pointermove',event=>{
+      if(this.mode==='walk' && this.manual && document.pointerLockElement!==canvas){
+        this.rotate(event.clientX-this.manual.x,event.clientY-this.manual.y);
+        this.manual={x:event.clientX,y:event.clientY};
+      }
+    });
+    window.addEventListener('blur',()=>this.keys.clear());
+  }
+  rotate(x,y) {
+    this.yaw-=x*.0032;
+    this.pitch=THREE.MathUtils.clamp(this.pitch-y*.0032,-1.40,1.40);
+  }
+  overview(state) {
+    if(this.mode==='walk')this.setMode('orbit');
+    if(state)this.state=state;
+    const walls=state?.objects.filter(isPerimeterPiece).map(footprint) || [];
+    if(walls.length){
+      const minX=Math.min(...walls.map(wall=>wall.x-wall.w/2)),maxX=Math.max(...walls.map(wall=>wall.x+wall.w/2));
+      const minZ=Math.min(...walls.map(wall=>wall.z-wall.d/2)),maxZ=Math.max(...walls.map(wall=>wall.z+wall.d/2));
+      const x=(minX+maxX)/2,z=(minZ+maxZ)/2;
+      const span=Math.min(165,Math.max(64,maxX-minX,maxZ-minZ));
+      const distance=span*1.15*Math.max(1,Math.min(1.8,.95/this.camera.aspect));
+      this.snap([x,-2,z+3],[x+distance*.66,distance*.92,z+distance*.96]);
+      return;
+    }
+    this.snap([-5,2,-9],[55,49,72]);
+  }
+  focusCastle(x,z) {
+    this.snap([x,2.75,z],[x+22,35,z+45]);
+  }
+  snap(target,position) {
+    const damping=this.orbit.enableDamping;
+    this.orbit.enableDamping=false;
+    this.orbit.update();
+    this.orbit.target.set(...target);
+    this.orbitCamera.position.set(...position);
+    this.orbit.update();
+    this.orbit.enableDamping=damping;
+    this.targetGround=this.floorAt(this.orbit.target.x,this.orbit.target.z);
+    this.updateOrbitView();
+  }
+  setMode(mode,state) {
+    if(state)this.state=state;
+    if(mode===this.mode)return;
+    if(this.mode==='walk')document.exitPointerLock?.();
+    if(mode==='walk'){
+      this.position.y=supportHeightWrapper(this.position.x,this.position.z,this.state);
+    }
+    this.mode=mode;
+    this.orbit.enabled=mode!=='walk';
+    this.orbit.maxPolarAngle=mode==='free'?Math.PI*.495:Math.PI*.465;
+    this.orbit.maxDistance=mode==='free'?470:295;
+    this.keys.clear();
+    if(mode!=='walk')this.updateOrbitView();
+  }
+  floorAt(x,z) {
+    const state=this.state;
+    return state?visibleTerrainHeight(x,z,state.seed,state.territory):undefined;
+  }
+  updateOrbitView() {
+    const target=this.orbit.target;
+    const desired=this.orbitCamera.position;
+    if(this.state){
+      const edge=bounds(this.state.territory);
+      const x=THREE.MathUtils.clamp(target.x,edge.minX-5,edge.maxX+5);
+      const z=THREE.MathUtils.clamp(target.z,edge.minZ-5,edge.maxZ+5);
+      desired.x+=x-target.x;
+      desired.z+=z-target.z;
+      target.x=x;
+      target.z=z;
+      const ground=this.floorAt(x,z);
+      const rise=this.targetGround===undefined?0:ground-this.targetGround;
+      desired.y+=rise;
+      target.y+=rise;
+      this.targetGround=ground;
+    }
+    this.camera.position.copy(desired);
+    const ground=this.floorAt(desired.x,desired.z);
+    if(ground!==undefined)this.camera.position.y=Math.max(desired.y,ground+groundClearance);
+    this.camera.lookAt(target);
+    this.camera.updateMatrixWorld();
+  }
+  resize() {
+    this.orbitCamera.aspect=this.camera.aspect;
+    this.orbitCamera.updateProjectionMatrix();
+  }
+  lookMode() {
+    const operation=this.canvas.requestPointerLock?.();
+    operation?.catch(()=>{});
+  }
+  zoom(scale) {
+    if(this.mode==='walk')return;
+    const offset=this.orbitCamera.position.clone().sub(this.orbit.target);
+    const distance=THREE.MathUtils.clamp(offset.length()*scale,this.orbit.minDistance,this.orbit.maxDistance);
+    this.orbitCamera.position.copy(this.orbit.target).add(offset.setLength(distance));
+    this.orbit.update();
+    this.updateOrbitView();
+  }
+  frame(dt,state,blocked) {
+    this.state=state;
+    const pressed=(...keys)=>keys.some(key=>this.keys.has(key));
+    if(this.mode==='walk'){
+      const z=Number(pressed('w','arrowup'))-Number(pressed('s','arrowdown'));
+      const x=Number(pressed('d','arrowright'))-Number(pressed('a','arrowleft'));
+      const speed=(pressed('shift')?7:4.2)*dt/(x&&z?Math.SQRT2:1);
+      const dx=(x*Math.cos(this.yaw)-z*Math.sin(this.yaw))*speed;
+      const dz=(-z*Math.cos(this.yaw)-x*Math.sin(this.yaw))*speed;
+      if(dx && !blocked(this.position.x+dx,this.position.z,.24,this.position.y))this.position.x+=dx;
+      if(dz && !blocked(this.position.x,this.position.z+dz,.24,this.position.y))this.position.z+=dz;
+      const y=supportHeightWrapper(this.position.x,this.position.z,state,this.position.y+.79);
+      this.position.y+=(y-this.position.y)*Math.min(1,dt*15);
+      this.camera.position.copy(this.position);
+      this.camera.position.y=Math.max(this.position.y+1.66,this.floorAt(this.position.x,this.position.z)+groundClearance);
+      this.camera.rotation.set(this.pitch,this.yaw,0,'YXZ');
+    }else{
+      if(this.mode==='free'){
+        const r=Number(pressed('d','arrowright'))-Number(pressed('a','arrowleft'));
+        const f=Number(pressed('s','arrowdown'))-Number(pressed('w','arrowup'));
+        if(r||f){
+          const offset=this.orbitCamera.position.clone().sub(this.orbit.target).setY(0).normalize();
+          const move=offset.clone().multiplyScalar(f).add(new THREE.Vector3(offset.z,0,-offset.x).multiplyScalar(r)).multiplyScalar(dt*37);
+          this.orbitCamera.position.add(move);this.orbit.target.add(move);
+        }
+      }
+      this.orbit.update();
+      this.updateOrbitView();
+    }
+  }
+}
+

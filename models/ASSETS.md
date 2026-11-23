@@ -1,0 +1,11 @@
+# Modelos de Valdória
+
+Os modelos e a heráldica são originais. Os arquivos editáveis de arquitetura, adereços, vegetação e caracteres ficam em `src/models`. As primitivas descrevem dimensões em metros e usam Y para cima, com a fachada principal orientada para +Z. A igreja e a capela são exportadas para `src/assets` pelo comando `npm run models`. A exportação preserva os nomes dos materiais usados na iluminação.
+
+Portões, grade, ponte levadiça, rodas, pás, chamas, bandeiras e membros são grupos com pivôs próprios. As peças estáticas são agrupadas por material e as partes móveis ficam separadas.
+
+O medalhão acima do portão foi modelado no SolidCraft. O arquivo editável é `selo-valdoria.sc` e o jogo carrega o modelo `src/assets/selo.glb`. O SolidCraft exporta em metros e converte de Z para Y como eixo vertical.
+
+O Castelo Nível 1 foi construído no Blender 5.2.1 a partir da referência de composição enviada pelo usuário. O projeto `castelo-nivel-1.blend` inclui a geometria, texturas originais empacotadas, câmera de apresentação e poses de portão e bandeiras. As fontes das texturas e dos modelos ficam em `build_stockade.py`. O jogo carrega `src/assets/castelo-nivel-1.glb` e controla as animações conforme o estado do reino.
+
+As dobradiças forjadas usam duas chapas biseladas, um pino e seis rebites modelados no SolidCraft. As fontes ficam em `dobradica-palicada.sc`, com a exportação em `src/assets/dobradica-palicada.glb`. As duas chapas são vinculadas separadamente ao poste e à folha do portão.
