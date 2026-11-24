@@ -8,4 +8,6 @@ O medalhão acima do portão foi modelado no SolidCraft. O arquivo editável é 
 
 O Castelo Nível 1 foi construído no Blender 5.2.1 a partir da referência de composição enviada pelo usuário. O projeto `castelo-nivel-1.blend` inclui a geometria, texturas originais empacotadas, câmera de apresentação e poses de portão e bandeiras. As fontes das texturas e dos modelos ficam em `build_stockade.py`. O jogo carrega `src/assets/castelo-nivel-1.glb` e controla as animações conforme o estado do reino.
 
-As dobradiças forjadas usam duas chapas biseladas, um pino e seis rebites modelados no SolidCraft. As fontes ficam em `dobradica-palicada.sc`, com a exportação em `src/assets/dobradica-palicada.glb`. As duas chapas são vinculadas separadamente ao poste e à folha do portão.
+As dobradiças do portão original usam duas chapas biseladas, um pino e seis rebites modelados no SolidCraft. As fontes ficam em `dobradica-palicada.sc`, com a exportação em `src/assets/dobradica-palicada.glb`. Nas novas muralhas, as ferragens fazem parte dos conjuntos abaixo.
+
+Os conjuntos modulares das muralhas de nível 1 e 2 foram modelados no SolidCraft. Cada arquivo `muralhas-nivel-N.sc` contém a paliçada, o portão de duas folhas e o módulo de esquina. Para refazer os arquivos editáveis e os GLBs do jogo, execute `python models/build_fortifications.py 1` e `python models/build_fortifications.py 2` com `solidcraft-cli` no PATH.

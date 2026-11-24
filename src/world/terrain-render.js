@@ -1,6 +1,8 @@
+import { onVillagePerimeter } from './perimeter.js';
 import * as THREE from 'three';
-import { BAND,bounds,inWater,terrainHeight,landscapeCell,random,riverX,riverWidth,waterLevel,
-  terrainBaseLevel,terrainCellSize,riverSurfaceWidth } from './terrain-data.js';
+import { BAND,bounds,inWater,insideTerritory,outsideOriginalTerritory,terrainHeight,landscapeCell,
+  ownedLandscapeCell,random,riverX,riverWidth,waterLevel,terrainBaseLevel,terrainCellSize,
+  riverSurfaceWidth } from './terrain-data.js';
 import { group,cyl,ball } from '../models/kit.js';
 
 const dummy=new THREE.Object3D(), color=new THREE.Color();
@@ -10,6 +12,42 @@ const evergreen=new THREE.MeshStandardMaterial({color:'white',roughness:1});
 const moss=['#6c9045','#79994e','#88a056','#5f8544','#7f9b52','#668b4a'].map(value=>new THREE.Color(value));
 const leaves=['#3d6744','#47734b','#5c7e46','#698349','#36593b','#4b7042'];
 const dry=new THREE.Color('#ad9b70'), riverBed = new THREE.Color('#8c8264');
+const plantShape=group();
+const trunk=cyl(plantShape,'timber',0,0,0,1,1,.72,7);
+const conifer=cyl(plantShape,'pine',0,0,0,1,1,.035,8);
+const broadleaf=ball(plantShape,'leaf',0,0,0,1,1,1,1);
+const stone=ball(plantShape,'stone',0,0,0,1,1,1);
+
+function vegetationAtEdge(point,edge) {
+  const x=THREE.MathUtils.clamp(point.x,edge.minX,edge.maxX);
+  const z=THREE.MathUtils.clamp(point.z,edge.minZ,edge.maxZ);
+  return !outsideOriginalTerritory(x,z) || Math.hypot(x-point.x,z-point.z)>3.5*point.size;
+}
+
+function markingHeight(x,z,seed,territory) {
+  const ground=terrainHeight(x,z,seed,territory);
+  const water=Math.abs(x-riverX(z,seed))<riverSurfaceWidth(z)?waterLevel:terrainBaseLevel;
+  return Math.max(ground,water)+.28;
+}
+
+function outline(edge,seed,territory,color,opacity) {
+  const points=[];
+  const {minX,maxX,minZ,maxZ}=edge;
+  const corners=[[minX,minZ],[maxX,minZ],[maxX,maxZ],[minX,maxZ],[minX,minZ]];
+  for(let i=0;i<4;i++){
+    const [x,z]=corners[i],[nextX,nextZ]=corners[i+1];
+    const steps=Math.ceil(Math.hypot(nextX-x,nextZ-z)/terrainCellSize);
+    for(let j=0;j<steps;j++){
+      const px=x+(nextX-x)*j/steps,pz=z+(nextZ-z)*j/steps;
+      points.push(new THREE.Vector3(px,markingHeight(px,pz,seed,territory),pz));
+    }
+  }
+  const material=new THREE.LineBasicMaterial({color,transparent:true,opacity,depthTest:false,
+    depthWrite:false,fog:false,toneMapped:false});
+  const line=new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(points),material);
+  line.renderOrder=4;
+  return line;
+}
 
 function patch(cx,cz,seed,territory) {
   const size=BAND,n=size/terrainCellSize;
@@ -88,35 +126,36 @@ function river(scene,minZ,maxZ,seed) {
 }
 
 export class Terrain {
-  constructor(scene,seed,territory) { this.scene=scene;this.update(seed,territory); }
+  constructor(scene,seed,territory,enclosed=false) { this.scene=scene;this.update(seed,territory,enclosed); }
 
-  update(seed,territory) {
-    const key=seed+JSON.stringify(territory);
+  update(seed,territory,enclosed=false) {
+    const key=seed+JSON.stringify(territory)+enclosed;
     if(this.key===key)return;
     this.key=key;
     if(this.root){
+      this.showExpansion(null);
       this.root.traverse(node=>{
         if(node.isInstancedMesh) node.dispose();
         else if(node.geometry) node.geometry.dispose();
       });
-      this.root.userData.borderMaterial?.dispose();
+      this.border.material.dispose();
       this.root.removeFromParent();
     }
     const root=this.root=group(this.scene,'terreno');
-    const {minX,maxX,minZ,maxZ}=bounds(territory);
-    const shape=group();
-    const trunk=cyl(shape,'timber',0,0,0,1,1,.72,7);
-    const conifer=cyl(shape,'pine',0,0,0,1,1,.035,8);
-    const broadleaf=ball(shape,'leaf',0,0,0,1,1,1,1);
-    const stone=ball(shape,'stone',0,0,0,1,1,1);
+    const edge=bounds(territory);
+    const {minX,maxX,minZ,maxZ}=edge;
     this.obstacles=new Map();
     // Group vegetation by region for frustum culling and walking collision lookup.
-    for(let cz=minZ/36;cz<maxZ/36;cz++){
-      for(let cx=minX/36;cx<maxX/36;cx++){
+    for(let cz=minZ/BAND-1;cz<=maxZ/BAND;cz++){
+      for(let cx=minX/BAND-1;cx<=maxX/BAND;cx++){
         root.add(patch(cx,cz,seed,territory));
         const trunks=[],pines=[],oaks=[],stones=[];
-        const plants=landscapeCell(cx,cz,seed);
-        this.obstacles.set(cx+','+cz,plants);
+        const owned=insideTerritory((cx+.5)*BAND,(cz+.5)*BAND,edge);
+        const plants=owned
+          ? ownedLandscapeCell(cx,cz,seed,edge).filter(p=>!enclosed||
+            !onVillagePerimeter(p.x,p.z,territory,p.collider+2.4))
+          : landscapeCell(cx,cz,seed).filter(p=>vegetationAtEdge(p,edge));
+        if(owned&&plants.length)this.obstacles.set(cx+','+cz,plants);
         const rng=random(seed+cx*11273+cz*41481);
         for(const p of plants){
           const y=terrainHeight(p.x,p.z,seed,territory), s=p.size;
@@ -140,31 +179,59 @@ export class Terrain {
         instances(root,trunk,trunks);instances(root,conifer,pines);instances(root,broadleaf,oaks);instances(root,stone,stones);
       }
     }
-    const grass=[],flowers=[],rng=random(seed+719);
+    const groundCover=new Map(),rng=random(seed+719);
     for(let i=0;i<3050;i++){
       const x=(rng()-.5)*256,z=(rng()-.5)*239;
       if(inWater(x,z,seed)||Math.abs(x-riverX(z,seed))<7)continue;
       if(Math.hypot(x,z)<60 && rng()<.55)continue;
       const scale=.15+rng()*.42,y=terrainHeight(x,z,seed,territory);
+      const key=Math.floor(x/54)+','+Math.floor(z/54);
+      if(!groundCover.has(key))groundCover.set(key,{grass:[],flowers:[]});
+      const {grass,flowers}=groundCover.get(key);
       grass.push({x,y:y+scale*.35,z,yaw:rng()*6,sx:.11,sy:scale,sz:.092,color:rng()>.4?'#728b3c':'#534f2d'});
       if(i%6===0) flowers.push({x,y:y+scale*.9,z,yaw:i,sx:.052,sy:.075,sz:.048,color:i%4?'#dbbc6f':'#f0dfb2'});
     }
-    instances(root,conifer,grass,{shadow:false});instances(root,broadleaf,flowers,{shadow:false});
+    for(const {grass,flowers} of groundCover.values()){
+      instances(root,conifer,grass,{shadow:false});instances(root,broadleaf,flowers,{shadow:false});
+    }
     const skirt=new THREE.Mesh(new THREE.PlaneGeometry(1600,1600),plain);
     skirt.rotation.x=-Math.PI/2;skirt.position.y=terrainBaseLevel;skirt.receiveShadow=true;
     root.add(skirt);
     river(root,minZ-120,maxZ+120,seed);
-    const edge=new THREE.LineBasicMaterial({color:'#e9c36f',transparent:true,opacity:.44});
-    const outline=new THREE.BufferGeometry().setFromPoints([[minX,minZ],[maxX,minZ],[maxX,maxZ],[minX,maxZ],[minX,minZ]]
-      .map(([x,z])=>new THREE.Vector3(x,terrainHeight(x,z,seed,territory)+.5,z)));
-    this.border=new THREE.Line(outline,edge);this.border.visible=false;root.add(this.border);
-    this.root.userData.borderMaterial=edge;
+    this.border=outline(edge,seed,territory,'#f9dc97',.76);
+    this.border.visible=false;root.add(this.border);
     this.waterSeed=seed;
+    root.updateMatrixWorld(true);
+    root.traverse(node=>{node.matrixAutoUpdate=false;});
+  }
+
+  showExpansion(edge,territory,purchased=false) {
+    if(this.expansion){
+      this.expansion.traverse(node=>{node.geometry?.dispose();node.material?.dispose();});
+      this.expansion.removeFromParent();
+      this.expansion=null;
+    }
+    if(!edge)return;
+    const {minX,maxX,minZ,maxZ}=edge;
+    const width=maxX-minX,depth=maxZ-minZ;
+    const geometry=new THREE.PlaneGeometry(width,depth,width/terrainCellSize,depth/terrainCellSize);
+    geometry.rotateX(-Math.PI/2);
+    geometry.translate((minX+maxX)/2,0,(minZ+maxZ)/2);
+    const vertices=geometry.attributes.position;
+    for(let i=0;i<vertices.count;i++){
+      vertices.setY(i,markingHeight(vertices.getX(i),vertices.getZ(i),this.waterSeed,territory));
+    }
+    const color=purchased?'#b7ff9b':'#ffd578';
+    const fill=new THREE.Mesh(geometry,new THREE.MeshBasicMaterial({color,transparent:true,
+      opacity:purchased?.17:.33,depthWrite:false,fog:false,toneMapped:false}));
+    fill.renderOrder=2;
+    this.expansion=group(this.root,'faixa de expansão');
+    this.expansion.add(fill,outline(edge,this.waterSeed,territory,color,1));
   }
 
   isSolid(x,z,radius) {
     for(let dx=-1;dx<=1;dx++)for(let dz=-1;dz<=1;dz++){
-      const group=this.obstacles.get((Math.floor(x/36)+dx)+','+(Math.floor(z/36)+dz));
+      const group=this.obstacles.get((Math.floor(x/BAND)+dx)+','+(Math.floor(z/BAND)+dz));
       if(group?.some(p=>Math.hypot(x-p.x,z-p.z)<p.collider+radius))return true;
     }
     return false;

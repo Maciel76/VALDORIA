@@ -4,10 +4,12 @@ import { readFile } from 'node:fs/promises';
 import { Box3, Group, PerspectiveCamera, Raycaster, Scene, Vector3 } from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { catalogue } from '../src/core/catalog.js';
+import { fortificationLevel,isVillageGate,isVillageWall,villageWallId } from '../src/core/fortifications.js';
+import { villageGatePositions,villagePerimeterBounds,villageWallSections,worldObjects } from '../src/world/perimeter.js';
 import { checkPlacement, containsPoint, footprint, linePositions, objectHeight, supportHeight } from '../src/core/geometry.js';
 import { collectTax, economy, edit, emptyKingdom, expansionCost, upgradeStarter, validatedKingdom } from '../src/core/kingdom.js';
 import { makeKingdom } from '../src/world/demo.js';
-import { BAND, BASE, bounds, inWater, riverX, terrainHeight, visibleTerrainHeight, waterLevel } from '../src/world/terrain-data.js';
+import { BAND, BASE, bounds, expansionBounds, inWater, landscapeCell, riverX, terrainHeight, visibleTerrainHeight, waterLevel } from '../src/world/terrain-data.js';
 import { Terrain } from '../src/world/terrain-render.js';
 import { makeRouteGraph, route } from '../src/world/traffic.js';
 import { blockedAt, CollisionGrid, supportHeightWrapper } from '../src/world/walk.js';
@@ -20,7 +22,9 @@ const stateWith=(...objects)=>({...emptyKingdom(),objects});
 test('catálogo tem todas as construções, fortificações, decorações e brasões',()=>{
   const count=group=>Object.values(catalogue).filter(item=>item.category===group).length;
   assert.equal(count('housing')+count('trade')+count('civic')+count('castle'),25);
-  assert.equal(count('walls'),11);
+  assert.equal(count('walls'),12);
+  assert.deepEqual(Object.values(catalogue).filter(item=>item.category==='walls'&&item.purchasable)
+    .map(item=>item.id),['villageWall','woodGate','palisade']);
   assert.equal(count('roads'),6);
   assert.equal(count('decor'),20);
   assert.equal(count('green'),14);
@@ -38,16 +42,17 @@ test('um quarto de volta troca dimensões e mantém colisão na orientação da 
 
 test('muralhas encostam na grade modular e uma linha desfaz a cobrança inteira',()=>{
   const kingdom=emptyKingdom();
-  const points=linePositions(catalogue.wall,{x:0,z:0},{x:12,z:8},0).map(point=>({...point,type:'wall'}));
+  const points=linePositions(catalogue.palisade,{x:0,z:0},{x:12,z:8},0).map(point=>({...point,type:'palisade'}));
   const operation=edit(kingdom,{kind:'place',points});
   assert.equal(operation.error,undefined);
   assert.equal(kingdom.objects.length,4);
-  assert.equal(kingdom.gold,5000-4*48);
+  assert.equal(kingdom.gold,5000-4*catalogue.palisade.price);
   assert.equal(checkPlacement(kingdom,piece('corner',16,1)),'');
   assert.equal(checkPlacement(kingdom,piece('wall',15,0)),'A área está ocupada.');
   edit(kingdom,{kind:'undo',change:operation.undo});
   assert.equal(kingdom.objects.length,0);
   assert.equal(kingdom.gold,5000);
+  assert.ok(edit(kingdom,{kind:'place',points:[piece('wall',0,0)]}).error);
 });
 
 test('lote reservado deixa jardins, passagem e espaços de decoração utilizáveis',()=>{
@@ -155,49 +160,143 @@ test('grafo conecta vias e corta rotas ao fechar ou remover a passagem',()=>{
   assert.equal(route(makeRouteGraph(kingdom),'-16:0','16:0').length,0);
 });
 
-test('muralhas cercam o reino e os três portões ligam caminhos internos e externos',()=>{
+test('a loja instala um perímetro no território já ampliado, cobra uma vez e permite desfazer',()=>{
   const state=makeKingdom('starter',1);
-  const entrances=state.objects.filter(object=>object.type==='cityGate');
-  const destinations=['4:184','200:24','-176:104'];
+  assert.equal(state.objects.some(isVillageWall),false);
+  state.starterPerimeter=true;
+  upgradeStarter(state);
+  assert.equal(state.objects.some(isVillageWall),false);
+  assert.equal(edit(state,{kind:'expand',direction:'west'}).error,undefined);
+  assert.equal(villageWallSections(state).length,0);
+  const before=structuredClone(state);
+  const purchase=edit(state,{kind:'buy-village-wall'});
+  assert.equal(purchase.error,undefined);
+  assert.equal(state.gold,before.gold-catalogue.villageWall.price);
+  assert.equal(purchase.objects.length,4);
+  assert.ok(purchase.objects.every(object=>object.wallLevel===1));
+  assert.equal(state.objects.find(object=>object.id==='per-6').x,-212);
+  assert.ok(villageWallSections(state).some(section=>section.x===-212));
+  assert.ok(edit(state,{kind:'buy-village-wall'}).error);
+  assert.equal(state.gold,before.gold-catalogue.villageWall.price);
+  assert.deepEqual(validatedKingdom(state),state);
+  edit(state,{kind:'undo',change:purchase.undo});
+  assert.deepEqual(state,before);
+  assert.equal(upgradeStarter(state).objects.some(isVillageWall),false);
+
+  const poor={...emptyKingdom(),gold:catalogue.villageWall.price-1};
+  assert.ok(edit(poor,{kind:'buy-village-wall'}).error);
+  assert.equal(poor.objects.length,0);
+  assert.ok(edit(state,{kind:'place',points:[piece('villageWall',0,0)]}).error);
+  const blocked=stateWith(piece('hut',0,-176));
+  assert.match(edit(blocked,{kind:'buy-village-wall'}).error,/traçado/);
+  assert.equal(blocked.gold,5000);
+  assert.equal(blocked.objects.length,1);
+});
+
+test('uma muralha cerca todo o território, com quatro esquinas e três acessos',()=>{
+  const state=makeKingdom('starter',1);
+  assert.equal(edit(state,{kind:'buy-village-wall'}).error,undefined);
+  const entrances=state.objects.filter(isVillageGate);
+  assert.equal(state.objects.filter(isVillageWall).length,1);
   assert.equal(entrances.length,3);
-  assert.equal(state.objects.filter(object=>object.type==='squareTower').length,4);
-  const openGraph=makeRouteGraph(state);
-  entrances.forEach((gate,index)=>{
-    assert.equal(containsPoint(gate,gate.x,gate.z),false);
-    assert.ok(route(openGraph,'0:104',destinations[index]).length>0);
+  assert.equal(villageWallSections(state).filter(object=>object.type==='squareTower').length,4);
+  assert.ok(villageWallSections(state).every(section=>!state.objects.some(object=>object.id===section.id)));
+
+  const {west,east,north,south}=villagePerimeterBounds(state.territory);
+  const terrain={isSolid:()=>false};
+  const open=new CollisionGrid(worldObjects(state));
+  for(const gate of entrances) {
+    assert.equal(blockedAt(state,terrain,open,gate.x,gate.z),false);
     edit(state,{kind:'gate',id:gate.id});
-  });
-  const closedGraph=makeRouteGraph(state);
-  for(const destination of destinations)assert.equal(route(closedGraph,'0:104',destination).length,0);
-  const collision=new CollisionGrid(state.objects), terrain={isSolid:()=>false};
-  for(let x=-38;x<=47;x+=.5)assert.equal(blockedAt(state,terrain,collision,x,41),true);
-  for(let x=-38;x<=44;x+=.5)assert.equal(blockedAt(state,terrain,collision,x,-41),true);
-  for(let z=-41;z<=38;z+=.5){
-    assert.equal(blockedAt(state,terrain,collision,-38,z),true);
-    assert.equal(blockedAt(state,terrain,collision,44,z),true);
+  }
+  const closed=new CollisionGrid(worldObjects(state));
+  for(let x=west;x<=east;x+=.5){
+    assert.equal(blockedAt(state,terrain,closed,x,north),true);
+    assert.equal(blockedAt(state,terrain,closed,x,south),true);
+  }
+  for(let z=north;z<=south;z+=.5){
+    assert.equal(blockedAt(state,terrain,closed,west,z),true);
+    assert.equal(blockedAt(state,terrain,closed,east,z),true);
   }
 });
 
-test('atualização instala muralhas uma vez e preserva construções, ouro e alterações',()=>{
-  const state=makeKingdom('starter',1);
-  const previous=state.objects.filter(object=>!object.id.startsWith('per-'));
-  const legacy={...state,objects:structuredClone(previous),gold:2538};
-  delete legacy.starterPerimeter;
-  const obstruction=piece('peasant',-10,-42,0,'existing-home');
-  const occupied={...legacy,objects:[...legacy.objects,obstruction]};
-  upgradeStarter(occupied);
-  assert.ok(occupied.objects.includes(obstruction));
-  assert.equal(occupied.objects.some(object=>object.id.startsWith('per-')),false);
+test('migração une as peças antigas, conserva construções e recupera o nível e estado de cada portão',()=>{
+  const starter=makeKingdom('starter',1);
+  const regular=starter.objects.filter(object=>!isVillageWall(object)&&!isVillageGate(object));
+  const saved={
+    ...starter,gold:2538,
+    objects:[...regular,piece('wall',-12,-41,0,'per-10',{wallLevel:2}),
+      piece('cityGate',1,41,0,'per-4',{open:false,wallLevel:1}),
+      piece('cityGate',44,6,1,'per-5',{open:true,wallLevel:2})]
+  };
+  const legacy=validatedKingdom(saved);
   upgradeStarter(legacy);
-  assert.equal(legacy.starterPerimeter,true);
   assert.equal(legacy.gold,2538);
-  assert.deepEqual(legacy.objects.slice(0,previous.length),previous);
-  const saved=validatedKingdom(legacy);
-  const selected=saved.objects.find(object=>object.type==='cityGate');
-  edit(saved,{kind:'remove',id:selected.id});
-  upgradeStarter(saved);
-  assert.equal(saved.objects.some(object=>object.id===selected.id),false);
-  assert.equal(saved.objects.filter(object=>object.type==='cityGate').length,2);
+  assert.deepEqual(legacy.objects.slice(0,regular.length),regular);
+  assert.equal(legacy.objects.find(isVillageWall).wallLevel,2);
+  assert.equal(legacy.objects.some(object=>object.id==='per-10'),false);
+  assert.deepEqual(legacy.objects.filter(isVillageGate).map(({wallLevel,open})=>[wallLevel,open]),
+    [[1,false],[2,true],[1,true]]);
+  const migrated=structuredClone(legacy);
+  upgradeStarter(legacy);
+  assert.deepEqual(validatedKingdom(legacy),migrated);
+});
+
+test('muralha inteira, portões e castelo têm melhorias independentes e reversíveis',()=>{
+  const state=makeKingdom('starter',1);
+  assert.equal(edit(state,{kind:'buy-village-wall'}).error,undefined);
+  const gate=state.objects.find(isVillageGate);
+  edit(state,{kind:'gate',id:gate.id});
+  const before=structuredClone(state);
+  const result=edit(state,{kind:'upgrade-walls',id:villageWallId});
+  assert.equal(result.error,undefined);
+  assert.equal(state.gold,before.gold-850);
+  assert.deepEqual(result.objects.map(object=>object.id),[villageWallId]);
+  assert.ok(villageWallSections(state).every(section=>section.wallLevel===2));
+  assert.ok(state.objects.filter(isVillageGate).every(object=>object.wallLevel===1));
+  assert.equal(state.objects.find(object=>object.id==='v-0').wallLevel,1);
+
+  assert.ok(edit(state,{kind:'upgrade-walls',id:gate.id}).error);
+  assert.ok(edit(state,{kind:'upgrade-gate',id:villageWallId}).error);
+  assert.ok(edit(state,{kind:'remove',id:gate.id}).error);
+  assert.ok(edit(state,{kind:'move',id:villageWallId,x:10,z:10,rotation:0}).error);
+  const gateResult=edit(state,{kind:'upgrade-gate',id:gate.id});
+  assert.equal(gateResult.error,undefined);
+  assert.equal(state.gold,before.gold-850-250);
+  assert.deepEqual(gateResult.objects.map(object=>[object.id,object.wallLevel,object.open]),[[gate.id,2,false]]);
+  const saved=validatedKingdom(state);
+  assert.deepEqual(saved,state);
+  assert.ok(edit(saved,{kind:'upgrade-gate',id:gate.id}).error);
+  assert.deepEqual(saved.objects.filter(isVillageGate).map(fortificationLevel),[2,1,1]);
+  edit(state,{kind:'undo',change:gateResult.undo});
+  edit(state,{kind:'undo',change:result.undo});
+  assert.deepEqual(state,before);
+  const poor={...state,gold:1};
+  assert.ok(edit(poor,{kind:'upgrade-walls',id:villageWallId}).error);
+  assert.deepEqual(poor.objects,before.objects);
+
+  const separate=emptyKingdom();
+  const placed=edit(separate,{kind:'place',points:[piece('palisade',0,0,0,'wall',{wallLevel:2})]}).objects[0];
+  assert.equal(placed.wallLevel,1);
+  assert.equal(edit(separate,{kind:'upgrade-walls',id:placed.id}).objects[0].wallLevel,2);
+});
+
+test('expandir ou desfazer reposiciona a muralha e o portão sem perder as melhorias',()=>{
+  const state=makeKingdom('starter',1);
+  assert.equal(edit(state,{kind:'buy-village-wall'}).error,undefined);
+  edit(state,{kind:'upgrade-walls',id:villageWallId});
+  edit(state,{kind:'upgrade-gate',id:'per-5'});
+  edit(state,{kind:'gate',id:'per-5'});
+  const before=structuredClone(state);
+  const expansion=edit(state,{kind:'expand',direction:'east'});
+  const gate=state.objects.find(object=>object.id==='per-5');
+  assert.ok(villageWallSections(state).some(section=>section.x===212));
+  assert.deepEqual([gate.x,gate.wallLevel,gate.open],[villageGatePositions(state.territory)['per-5'].x,2,false]);
+  assert.equal(gate.x,212);
+  assert.deepEqual(validatedKingdom(state),state);
+  edit(state,{kind:'undo',change:expansion.undo});
+  assert.deepEqual(state,before);
+  assert.ok(villageWallSections(state).every(section=>section.x<=176&&section.wallLevel===2));
 });
 
 test('cobrança, saldo insuficiente, expansão e arrecadação sobrevivem ao recarregamento',()=>{
@@ -254,7 +353,7 @@ test('expansões nivelam o solo seco, mantêm o rio e persistem no salvamento',(
   assert.equal(supportHeightWrapper(road.x,road.z,restored),.14);
 });
 
-test('a malha 3D da faixa comprada usa a mesma altura plana da construção',()=>{
+test('a faixa visível perde o relevo e os obstáculos ao comprar e volta ao desfazer',()=>{
   const kingdom=emptyKingdom();
   const scene=new Scene();
   const terrain=new Terrain(scene,kingdom.seed,kingdom.territory);
@@ -262,15 +361,28 @@ test('a malha 3D da faixa comprada usa a mesma altura plana da construção',()=
     geometry?.parameters?.width===BAND && geometry.attributes.position.getX(0)===BASE &&
     geometry.attributes.position.getZ(0)===0);
 
-  assert.equal(parcel(),undefined);
+  const original=Array.from(parcel().geometry.attributes.position.array);
+  const plant=landscapeCell(BASE/BAND,0,kingdom.seed).find(({x,z})=>x>BASE+5&&x<BASE+BAND-5&&z>5&&z<BAND-5);
+  assert.ok(plant);
+  const decoration=piece('hut',plant.x,plant.z);
+  assert.equal(checkPlacement(kingdom,decoration),'Fora do território.');
+  const strip=expansionBounds(kingdom.territory,'east');
+  assert.deepEqual(strip,{minX:BASE,maxX:BASE+BAND,minZ:-BASE,maxZ:BASE});
+  terrain.showExpansion(strip,kingdom.territory);
+  assert.ok(terrain.expansion);
+  assert.deepEqual(Array.from(parcel().geometry.attributes.position.array),original);
   const operation=edit(kingdom,{kind:'expand',direction:'east'});
   terrain.update(kingdom.seed,kingdom.territory);
   const vertices=parcel().geometry.attributes.position;
   for(let i=0;i<vertices.count;i++)assert.equal(vertices.getY(i),0);
+  assert.equal(terrain.expansion,null);
+  assert.equal(terrain.isSolid(plant.x,plant.z,.24),false);
+  assert.equal(checkPlacement(kingdom,decoration),'');
+  assert.equal(expansionBounds(kingdom.territory,'east').minX,strip.maxX);
 
   edit(kingdom,{kind:'undo',change:operation.undo});
   terrain.update(kingdom.seed,kingdom.territory);
-  assert.equal(parcel(),undefined);
+  assert.deepEqual(Array.from(parcel().geometry.attributes.position.array),original);
 });
 
 test('a altura visível do terreno acompanha as duas faces da malha e as regiões expandidas',()=>{

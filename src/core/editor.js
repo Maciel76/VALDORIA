@@ -1,6 +1,7 @@
 import { catalogue } from './catalog.js';
 import { fixedRotation, gridRound, getLineCandidate, linePositions, gates, containsPoint } from './geometry.js';
 import { edit } from './kingdom.js';
+import { isFixedFortification,isVillageGate } from './fortifications.js';
 
 export class Editor {
   constructor(view,hud,onChange) { this.view=view;this.hud=hud;this.onChange=onChange;this.history=[]; }
@@ -17,10 +18,9 @@ export class Editor {
     this.selected=this.state.objects.find(object=>object.id===id) || null;
     this.view?.markObject(this.selected);
     this.hud.showSelection(this.selected);
-    if(this.selected)this.hud.positionSelection(this.view?.projectSelection());
   }
   startPlacement(type, object=null) {
-    if(!this.view)return;
+    if(!this.view||isFixedFortification(object)||type==='villageWall'||(!object&&!catalogue[type]?.purchasable))return;
     this.select(null);
     const point=object ? {x:object.x,z:object.z} : this.player ?
       {x:this.player.x-Math.sin(this.view.navigation.yaw)*8,z:this.player.z-Math.cos(this.view.navigation.yaw)*8} :
@@ -82,7 +82,7 @@ export class Editor {
     const result=getLineCandidate(this.state,item,points,options);
     const reason=result.failures.find(Boolean) || (!entry.move&&this.state.gold<result.total?'Moedas insuficientes.':'');
     this.detail={points,cost:result.total,reason};
-    this.view?.setPreview(points,entry.type,result.failures.map(failed=>failed||(!entry.move&&this.state.gold<result.total)));
+    this.view?.setPreview(points,entry.move??{type:entry.type},result.failures.map(failed=>failed||(!entry.move&&this.state.gold<result.total)));
     this.hud.showPlacement(entry,this.detail);
   }
   confirm(point) {
@@ -111,6 +111,14 @@ export class Editor {
     if(!object)return;
     if(rotation===undefined){this.startPlacement(object.type,object);return;}
     if(this.apply({kind:'move',id:object.id,x:object.x,z:object.z,rotation})){this.select(object.id);this.hud.notify('Construção girada.');}
+  }
+  upgradeFortification(kind) {
+    if(!this.selected)return;
+    const gate=isVillageGate(this.selected);
+    if(this.apply({kind,id:this.selected.id})){
+      this.select(this.selected.id);
+      this.hud.notify(gate?'Portão melhorado para o nível 2.':'Muralha melhorada para o nível 2.');
+    }
   }
   remove() {
     if(!this.selected)return;

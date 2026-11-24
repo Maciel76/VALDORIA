@@ -1,8 +1,9 @@
 import * as THREE from 'three';
-import { makeModel,sealFor } from '../models/library.js';
+import { loadLandmarks,makeModel,sealFor } from '../models/library.js';
 import { tracks,animateModel } from '../models/animation.js';
 
 const thumbnails=new Map();
+const thumbnailQueues=new WeakMap();
 let renderer, scene, camera;
 function setup() {
   renderer=new THREE.WebGLRenderer({alpha:true,antialias:true,preserveDrawingBuffer:true});
@@ -19,7 +20,7 @@ export function thumbnail(id) {
   if(thumbnails.has(id))return thumbnails.get(id);
   try {
     if(!renderer)setup();
-    const mesh=makeModel(id);
+    const mesh=makeModel({type:id});
     if(id==='keep')sealFor(mesh);
     mesh.traverse(node=>{if(node.isPointLight||node.name==='fumaça')node.visible=false;});
     const motion=tracks(mesh,1);
@@ -39,14 +40,21 @@ export function thumbnail(id) {
   } catch { return ''; }
 }
 export function fillThumbnails(container) {
-  const images=[...container.querySelectorAll('img[data-model]')];
-  const pulse=()=>{
-    if(!images.length)return;
-    for(const image of images.splice(0,3)){
-      if(!image.isConnected)continue;
-      const data=thumbnail(image.dataset.model);
-      if(data)image.src=data;
+  const dialog=container.closest('dialog');
+  const images=[...container.querySelectorAll('img[data-model]:not([src])')];
+  thumbnailQueues.set(container,images);
+  const active=()=>dialog.open&&thumbnailQueues.get(container)===images;
+  const pulse=async()=>{
+    if(!active()||!images.length)return;
+    const image=images.shift();
+    const type=image.dataset.model;
+    if(!thumbnails.has(type)){
+      const loading=loadLandmarks([{type}]);
+      if(loading)await loading;
     }
+    if(!active()||!image.isConnected)return;
+    const data=thumbnail(type);
+    if(data)image.src=data;
     if(images.length)setTimeout(pulse,36);
   };
   setTimeout(pulse,35);

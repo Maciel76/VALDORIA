@@ -3,7 +3,8 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { supportHeightWrapper } from './walk.js';
 import { bounds,visibleTerrainHeight } from './terrain-data.js';
 import { footprint } from '../core/geometry.js';
-import { isPerimeterPiece } from './perimeter.js';
+import { isPerimeterPiece,isVillageWall } from '../core/fortifications.js';
+import { villagePerimeterBounds } from './perimeter.js';
 
 const groundClearance=1.4;
 
@@ -52,6 +53,10 @@ export class KingdomCamera {
   overview(state) {
     if(this.mode==='walk')this.setMode('orbit');
     if(state)this.state=state;
+    if(state?.objects.some(isVillageWall)){
+      this.snap([3,-2,3],[71,92,101]);
+      return;
+    }
     const walls=state?.objects.filter(isPerimeterPiece).map(footprint) || [];
     if(walls.length){
       const minX=Math.min(...walls.map(wall=>wall.x-wall.w/2)),maxX=Math.max(...walls.map(wall=>wall.x+wall.w/2));
@@ -64,8 +69,31 @@ export class KingdomCamera {
     }
     this.snap([-5,2,-9],[55,49,72]);
   }
+  focusVillageWall(territory) {
+    const {west,east,north,south}=villagePerimeterBounds(territory);
+    const x=(west+east)/2,z=(north+south)/2;
+    const extent=Math.max(south-north,(east-west)/this.camera.aspect);
+    const distance=extent*.57/Math.tan(THREE.MathUtils.degToRad(this.camera.fov/2));
+    this.orbit.maxDistance=Math.max(this.orbit.maxDistance,distance*1.1);
+    this.snap([x,0,z],[x,distance,z+distance*.12]);
+  }
+  focusVillageGate(gate) {
+    const y=this.floorAt(gate.x,gate.z)??0;
+    const angle=gate.rotation*Math.PI/2;
+    const dx=12*Math.cos(angle)+21*Math.sin(angle);
+    const dz=21*Math.cos(angle)-12*Math.sin(angle);
+    this.snap([gate.x,y+2.2,gate.z],[gate.x+dx,y+14,gate.z+dz]);
+  }
   focusCastle(x,z) {
     this.snap([x,2.75,z],[x+22,35,z+45]);
+  }
+  focusExpansion({minX,maxX,minZ,maxZ},state) {
+    this.state=state;
+    const x=(minX+maxX)/2,z=(minZ+maxZ)/2;
+    const extent=Math.max(maxZ-minZ,(maxX-minX)/this.camera.aspect);
+    const height=Math.max(90,extent*.61/Math.tan(THREE.MathUtils.degToRad(this.camera.fov/2)));
+    this.orbit.maxDistance=Math.max(this.orbit.maxDistance,height*1.1);
+    this.snap([x,0,z],[x,height,z+height*.19]);
   }
   snap(target,position) {
     const damping=this.orbit.enableDamping;
@@ -83,7 +111,7 @@ export class KingdomCamera {
     if(mode===this.mode)return;
     if(this.mode==='walk')document.exitPointerLock?.();
     if(mode==='walk'){
-      this.position.y=supportHeightWrapper(this.position.x,this.position.z,this.state);
+      this.position.y=supportHeightWrapper(this.position.x,this.position.z,this.state,undefined,this.surfaces);
     }
     this.mode=mode;
     this.orbit.enabled=mode!=='walk';
@@ -146,7 +174,7 @@ export class KingdomCamera {
       const dz=(-z*Math.cos(this.yaw)-x*Math.sin(this.yaw))*speed;
       if(dx && !blocked(this.position.x+dx,this.position.z,.24,this.position.y))this.position.x+=dx;
       if(dz && !blocked(this.position.x,this.position.z+dz,.24,this.position.y))this.position.z+=dz;
-      const y=supportHeightWrapper(this.position.x,this.position.z,state,this.position.y+.79);
+      const y=supportHeightWrapper(this.position.x,this.position.z,state,this.position.y+.79,this.surfaces);
       this.position.y+=(y-this.position.y)*Math.min(1,dt*15);
       this.camera.position.copy(this.position);
       this.camera.position.y=Math.max(this.position.y+1.66,this.floorAt(this.position.x,this.position.z)+groundClearance);

@@ -85,8 +85,7 @@ def assert_catalogue_centered(page):
     assert abs(box["y"] + box["height"] / 2 - page.viewport_size["height"] / 2) <= 1
 
 
-def stored(page, slot):
-    return page.evaluate("""
+READ_SAVED = """
         slot => new Promise((resolve, reject) => {
           const open = indexedDB.open('reino-valdoria-saves', 1);
           open.onerror = () => reject(open.error);
@@ -96,7 +95,11 @@ def stored(page, slot):
             req.onerror = () => reject(req.error);
           };
         })
-    """, slot)
+    """
+
+
+def stored(page, slot):
+    return page.evaluate(READ_SAVED, slot)
 
 
 def assert_no_errors(issues):
@@ -107,8 +110,8 @@ def offline(browser, address):
     context, page, issues = open_page(browser, address)
     expect(page.locator("#gold")).to_have_text("5.000")
     saved = stored(page, "own")
-    assert saved["starterPerimeter"]
-    assert sum(obj["type"] == "cityGate" for obj in saved["objects"]) == 3
+    assert not any(obj["type"] in ("villageWall", "cityGate") for obj in saved["objects"])
+    expect(action(page, "fortifications", ".camera-tools")).not_to_be_visible()
     expect(page.locator("#game > header")).to_have_count(0)
     expect(page.get_by_text("Vale de Valdória", exact=True)).not_to_be_visible()
     expect(page.get_by_text("Seu reino", exact=True)).not_to_be_visible()
@@ -120,6 +123,47 @@ def offline(browser, address):
     expect(action(page, "gate", "#selection")).to_have_text("Abrir portão")
     action(page, "undo", ".dock").click()
     expect(action(page, "gate", "#selection")).to_have_text("Fechar portão")
+    action(page, "catalogue", ".dock").click()
+    page.locator('[data-category="walls"]').click()
+    page.locator('[data-item="villageWall"]').click()
+    expect(page.get_by_role("dialog", name="Construir muralha da vila")).to_be_visible()
+    action(page, "buy-village-wall", "#panel").click()
+    expect(page.locator("#selection h3")).to_have_text("Muralha da vila")
+    expect(page.locator("#placement")).not_to_be_visible()
+    action(page, "catalogue", ".dock").click()
+    expect(page.locator('[data-item="villageWall"]')).to_be_disabled()
+    action(page, "catalogue", "#catalogue").click()
+    action(page, "territory", ".dock").click()
+    page.locator('#panel [data-action="preview-expansion"][data-value="east"]').click()
+    action(page, "expand", "#panel").click()
+    page.wait_for_function(f"""async () => (await ({READ_SAVED})('own'))
+        ?.objects.some(object => object.id === 'per-5' && object.x === 212)""")
+    action(page, "fortifications", ".camera-tools").click()
+    page.locator('#panel [data-value="village-wall"]').click()
+    expect(page.locator("#selection h3")).to_have_text("Muralha da vila")
+    expect(action(page, "move", "#selection")).to_have_count(0)
+    action(page, "upgrade-walls", "#selection").click()
+    expect(page.locator("#selection small")).to_have_text("Nível 2")
+    expect(action(page, "upgrade-walls", "#selection")).to_have_count(0)
+    action(page, "fortifications", ".camera-tools").click()
+    expect(page.locator('#panel [data-value="per-4"]')).to_contain_text("Nível 1")
+    page.locator('#panel [data-value="per-4"]').click()
+    expect(page.locator("#selection h3")).to_have_text("Portão sul")
+    action(page, "upgrade-gate", "#selection").click()
+    expect(page.locator("#selection small")).to_have_text("Nível 2")
+    expect(action(page, "gate", "#selection")).to_have_text("Fechar portão")
+    page.wait_for_function(f"""async () => (await ({READ_SAVED})('own'))
+        ?.objects.some(object => object.id === 'per-4' && object.wallLevel === 2)""")
+    page.reload(wait_until="networkidle")
+    page.locator("#app[data-ready=true]").wait_for(timeout=45000)
+    action(page, "fortifications", ".camera-tools").click()
+    expect(page.locator('#panel [data-value="village-wall"]')).to_contain_text("Nível 2")
+    expect(page.locator('#panel [data-value="per-4"]')).to_contain_text("Nível 2")
+    expect(page.locator('#panel [data-value="per-5"]')).to_contain_text("Nível 1")
+    expect(page.locator('#panel [data-value="per-6"]')).to_contain_text("Nível 1")
+    action(page, "close", "#panel").click()
+    saved = stored(page, "own")
+    assert [obj["wallLevel"] for obj in saved["objects"] if obj["type"] == "cityGate"] == [2, 1, 1]
     action(page, "settings", ".game-tools").click()
     expect(page.get_by_label("Nome do reino")).to_have_value("Vale de Valdória")
     action(page, "saves", "#panel").click()
@@ -133,6 +177,7 @@ def offline(browser, address):
     page.keyboard.press("Escape")
     expect(catalogue_button).to_have_attribute("aria-expanded", "false")
     catalogue_button.click()
+    page.locator('[data-category="housing"]').click()
     page.locator('[data-item="hut"]').click()
     expect(page.locator("#catalogue")).not_to_be_visible()
     expect(page.locator("#placement")).to_be_visible()
@@ -189,7 +234,8 @@ def offline(browser, address):
 
     catalogue_button.click()
     page.locator('[data-category="walls"]').click()
-    page.locator('[data-item="wall"]').click()
+    expect(page.locator('[data-item="wall"],[data-item="lowWall"],[data-item="cityGate"]')).to_have_count(0)
+    page.locator('[data-item="palisade"]').click()
     action(page, "line", "#placement").click()
     page.mouse.click(530, 360)
     expect(page.locator("#gold")).to_have_text("5.000")
@@ -197,14 +243,23 @@ def offline(browser, address):
     for _ in range(16):
         page.keyboard.press("ArrowRight")
     page.keyboard.press("Enter")
-    expect(page.locator("#gold")).to_have_text("4.856")
+    expect(page.locator("#gold")).to_have_text("4.907")
     action(page, "undo", ".dock").click()
     expect(page.locator("#gold")).to_have_text("5.000")
 
     action(page, "territory", ".dock").click()
     expect(page.locator("#panel")).to_contain_text("faixa de terreno plano de 36 m")
-    page.locator('#panel [data-value="north"]').click()
+    east = page.locator('#panel [data-action="preview-expansion"][data-value="east"]')
+    east.click()
+    expect(east).to_have_attribute("aria-pressed", "true")
+    expect(action(page, "expand", "#panel")).to_have_text("Comprar ao leste")
+    page.keyboard.press("Escape")
+    expect(page.locator("#gold")).to_have_text("5.000")
+    assert stored(page, "empty")["territory"]["east"] == 0
+    action(page, "territory", ".dock").click()
+    action(page, "expand", "#panel").click()
     expect(page.locator("#gold")).to_have_text("4.330")
+    expect(page.locator("#toast")).to_contain_text("Faixa de 36 m liberada")
     action(page, "settings", ".game-tools").click()
     action(page, "save", "#panel").click()
     expect(page.get_by_text("Salvamento atualizado.")).to_be_visible()
@@ -283,6 +338,11 @@ def mobile_layout(browser, address):
     expect(page.locator("#toast")).to_have_text("Construção movida.")
     expect(page.locator("#placement")).not_to_be_visible()
     action(page, "walk", ".dock").tap()
+    expect(page.locator("#touch-walk")).to_be_visible()
+    action(page, "territory", ".dock").tap()
+    page.locator('#panel [data-action="preview-expansion"][data-value="west"]').tap()
+    expect(action(page, "expand", "#panel")).to_have_text("Comprar ao oeste")
+    action(page, "close", "#panel").tap()
     expect(page.locator("#touch-walk")).to_be_visible()
     assert page.evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches")
     action(page, "map", ".dock").tap()

@@ -41,6 +41,7 @@ const byCategory = {
     ['keep','Grande castelo',2300,34,34,'Fortaleza com salão, torres, pátio e ponte levadiça.',0,15]
   ],
   walls: [
+    ['villageWall','Muralha da vila',1200,0,0,'Cerca todo o território com uma muralha de nível 1 e três portões.'],
     ['wall','Muralha reta',48,4,2,'Trecho de pedra com ameias. Permite construir em linha.'],
     ['wallShort','Muralha curta',36,3,1.4,'Trecho de três metros para completar encaixes perto de torres e esquinas.'],
     ['corner','Muralha de canto',64,4,4,'Trecho em ângulo para unir duas muralhas.'],
@@ -51,7 +52,7 @@ const byCategory = {
     ['drawGate','Portão fortificado',385,8,10,'Portão com grade e ponte levadiça operáveis.'],
     ['steps','Escadaria da muralha',74,2,7,'Escadaria de pedra para alcançar a ronda.'],
     ['lowWall','Mureta de pedra',25,4,0.7,'Mureta baixa para delimitar jardins e pátios.'],
-    ['palisade','Paliçada',31,4,0.65,'Estacas de madeira que podem ser colocadas em linha.']
+    ['palisade','Paliçada',31,4,1,'Muralha de madeira de nível 1. Permite construir em linha e reforçar com uma base de pedra no nível 2.']
   ],
   roads: [
     ['dirt','Estrada de terra',8,2,2,'Estrada de terra batida para ligar os lotes.'],
@@ -111,10 +112,13 @@ const byCategory = {
   ].map(([id,name], i) => [id,name,32,0.55,0.55,`Estandarte ${['em mastro','para fachada','para muralha'][i % 3]} com brasão fictício.`])
 };
 
+const retiredWallPieces = new Set(['wall','wallShort','corner','squareTower','roundTower','cityGate','drawGate','steps','lowWall']);
+
 export const flags = ['#8b303a','#345b52','#323f71','#5b3565','#576336','#345f7b','#ab5356','#53506c','#866021','#434747','#47776b','#923b42'];
 export const catalogue = Object.fromEntries(categories.flatMap(({ id: category }) =>
   byCategory[category].map(([id,name,price,w,d,description,homes=0,jobs=0], index) => [id,{
     id, name, price, w, d, description, homes, jobs, category, index,
+    purchasable: !retiredWallPieces.has(id),
     line: ['roads','walls'].includes(category) && ['dirt','cobbles','gravel','paving','walkway','wall','lowWall','palisade'].includes(id),
     grid: category === 'roads' && id !== 'bridge' ? 2 : category === 'walls' ? 0.5 :
       ['decor','green','lights','banners'].includes(category) ? 0.25 : 1,

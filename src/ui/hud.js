@@ -1,7 +1,11 @@
 import { catalogue,categories } from '../core/catalog.js';
 import { economy, expansionCost, HARVEST_MS, times } from '../core/kingdom.js';
 import { gates } from '../core/geometry.js';
-import { bounds, directions, LIMIT } from '../world/terrain-data.js';
+import {
+  fortificationRole,fortificationLevel,fortificationUpgradeCost,
+  isFixedFortification,isVillageGate,isVillageWall,villageGateNames
+} from '../core/fortifications.js';
+import { BAND, bounds, directions, LIMIT } from '../world/terrain-data.js';
 import { icon,refreshIcons } from './icons.js';
 import { drawMinimap } from './atlas-art.js';
 import { fillThumbnails } from './previews.js';
@@ -19,6 +23,7 @@ export class HUD {
     this.root=root;
     this.category='housing';
     this.item=null;
+    this.hasVillageWall=false;
     this.saveStatus='Abrindo reino…';
     root.innerHTML=`
       <main id="game" aria-label="Reino de Valdória">
@@ -50,6 +55,7 @@ export class HUD {
         </div>
         <div class="camera-tools" aria-label="Zoom da câmera">
           ${tool('zoom-in','Aproximar','plus')}${tool('zoom-out','Afastar','minus')}${tool('overview','Visão geral','crosshair')}${tool('focus-castle','Enquadrar castelo','castle')}
+          ${button('fortifications','Fortificações da vila','brick-wall','class="tool" aria-label="Fortificações da vila" title="Fortificações da vila" hidden')}
         </div>
         <div class="crosshair" id="crosshair" hidden></div>
         <div id="touch-walk" class="touch-walk" aria-label="Controle de caminhada" hidden>
@@ -102,17 +108,21 @@ export class HUD {
   }
   renderCategory() {
     const { name }=categories.find(category=>category.id===this.category);
-    const matches=Object.values(catalogue).filter(item=>item.category===this.category);
+    const matches=Object.values(catalogue).filter(item=>item.category===this.category&&item.purchasable);
     this.root.querySelector('#category-name').textContent=name;
     this.root.querySelector('#category-total').textContent=`${matches.length} ${matches.length===1?'peça':'peças'}`;
     this.catalogue.querySelectorAll('[data-category]').forEach(button=>button.setAttribute('aria-pressed',button.dataset.category===this.category));
-    this.shop.innerHTML=matches.map(item=>`<button class="item-card" type="button" data-item="${item.id}" aria-pressed="false" title="${item.description}">
-      <span class="item-figure">${icon(categories.find(c=>c.id===this.category).icon)}<img data-model="${item.id}" alt=""></span>
-      <span class="item-copy"><strong>${item.name}</strong><small>${icon('coins')}${fmt.format(item.price)}</small></span>
-      </button>`).join('');
+    this.shop.innerHTML=matches.map(item=>{
+      const perimeter=item.id==='villageWall';
+      const owned=perimeter&&this.hasVillageWall;
+      return `<button class="item-card" type="button" data-item="${item.id}" aria-pressed="false" title="${item.description}" ${owned?'disabled':''}>
+        <span class="item-figure">${icon(categories.find(c=>c.id===this.category).icon)}<img data-model="${perimeter?'palisade':item.id}" alt=""></span>
+        <span class="item-copy"><strong>${item.name}</strong><small>${owned?'Já construída':icon('coins')+fmt.format(item.price)}</small></span>
+        </button>`;
+    }).join('');
     this.shop.scrollTop=0;
     this.markItem();
-    fillThumbnails(this.shop);
+    if(this.catalogue.open)fillThumbnails(this.shop);
   }
   markItem() {
     this.shop.querySelectorAll('[data-item]').forEach(button=>button.setAttribute('aria-pressed',button.dataset.item===this.item));
@@ -126,13 +136,17 @@ export class HUD {
       return;
     }
     this.items.hidden=false;
-    this.items.innerHTML=`<p>${item.description}</p><div><span>${icon('expand')}${fmt.format(item.w)} × ${fmt.format(item.d)} m</span>
+    const size=item.id==='villageWall'?'Todo o território':`${fmt.format(item.w)} × ${fmt.format(item.d)} m`;
+    this.items.innerHTML=`<p>${item.description}</p><div><span>${icon('expand')}${size}</span>
       ${item.homes?`<span>${icon('users-round')}${item.homes} moradores</span>`:''}
       ${item.jobs?`<span>${icon('hammer')}${item.jobs} empregos</span>`:''}</div>`;
   }
   toggleCatalogue(open=!this.catalogue.open) {
     if(open===this.catalogue.open)return;
-    if(open)this.catalogue.showModal();
+    if(open){
+      this.catalogue.showModal();
+      fillThumbnails(this.shop);
+    }
     else this.catalogue.close();
     this.catalogueButton.setAttribute('aria-expanded',String(open));
   }
@@ -154,6 +168,12 @@ export class HUD {
     this.root.querySelector('.undo-button').disabled=!undo||Boolean(guest);
     this.root.querySelectorAll('[data-action="catalogue"],[data-action="territory"]').forEach(x=>x.disabled=Boolean(guest));
     this.root.querySelector('#game').classList.toggle('visiting',Boolean(guest));
+    const hasVillageWall=state.objects.some(isVillageWall);
+    this.root.querySelector('[data-action="fortifications"]').hidden=Boolean(guest)||!hasVillageWall;
+    if(this.hasVillageWall!==hasVillageWall){
+      this.hasVillageWall=hasVillageWall;
+      if(this.category==='walls')this.renderCategory();
+    }
     const period=timeOptions.find(([id])=>id===state.time);
     const byTime=this.root.querySelector('.game-tools [data-action="time"]');
     if(byTime.dataset.period!==state.time){
@@ -199,10 +219,21 @@ export class HUD {
     this.selection.hidden=!object;
     if(!object)return;
     const item=catalogue[object.type];
-    this.selection.innerHTML=`<div><small>Selecionado</small><h3>${item.name}</h3></div><div class="selection-tools">
+    const role=fortificationRole(object);
+    const level=fortificationLevel(object);
+    const cost=fortificationUpgradeCost(object);
+    const gate=isVillageGate(object);
+    const names={castle:`Castelo Nível ${level}`,wall:'Paliçada',tower:'Torre da muralha',
+      gate:villageGateNames[object.id]??'Portão da muralha','village-wall':'Muralha da vila'};
+    const name=role?names[role]:item.name;
+    const caption=role==='castle'?'Muralhas do castelo':role?`Nível ${level}`:'Selecionado';
+    const upgradeAction=gate?'upgrade-gate':'upgrade-walls';
+    const upgradeLabel=gate?'Melhorar portão':'Melhorar muralha';
+    this.selection.innerHTML=`<div><small>${caption}</small><h3>${name}</h3></div><div class="selection-tools">
+      ${cost===null?'':button(upgradeAction,`Melhorar · ${fmt.format(cost)}`,'coins',`class="gate-button" aria-label="${upgradeLabel} para o nível 2 por ${fmt.format(cost)} de ouro" title="${upgradeLabel}"`)}
       ${gates.has(object.type)?button('gate',object.open?'Fechar portão':'Abrir portão','door-open','class="gate-button"'):''}
-      ${tool('move','Mover construção','move')}${tool('rotate-object','Girar construção','rotate-cw')}
-      ${tool('delete','Excluir construção','trash-2')}${tool('clear-selection','Limpar seleção','x')}</div>`;
+      ${isFixedFortification(object)?'':tool('move','Mover construção','move')+tool('rotate-object','Girar construção','rotate-cw')+tool('delete','Excluir construção','trash-2')}
+      ${tool('clear-selection','Limpar seleção','x')}</div>`;
     refreshIcons();
   }
   notify(message) {
@@ -221,15 +252,54 @@ export class HUD {
     this.modal('Horário do reino',`<div class="option-grid">${timeOptions.filter(([id])=>times.includes(id)).map(([id,name,ico])=>
       button('set-time',name,ico,`data-value="${id}" class="${id===active?'current':''}"`)).join('')}</div>`);
   }
-  showTerritory(state) {
+  showFortifications(state) {
+    const options=state.objects.filter(isFixedFortification).map(object=>{
+      const wall=isVillageWall(object);
+      const title=wall?'Muralha da vila':villageGateNames[object.id];
+      const detail=`Nível ${fortificationLevel(object)}${wall?'':object.open?' · Aberto':' · Fechado'}`;
+      return `<button type="button" data-action="focus-fortification" data-value="${object.id}">
+        ${icon(wall?'brick-wall':'door-open')}<span>${title}<small>${detail}</small></span></button>`;
+    });
+    this.modal('Fortificações da vila',`<div class="option-grid">${options.join('')}</div>`);
+  }
+  showVillageWallPurchase(state) {
+    const cost=catalogue.villageWall.price;
     const edge=bounds(state.territory);
-    this.modal('Expandir território',`<p class="modal-intro">Seu território mede <strong>${edge.maxX-edge.minX} × ${edge.maxZ-edge.minZ} m</strong>. Cada expansão acrescenta uma faixa de terreno plano de 36 m.</p>
-      <div class="option-grid">${directions.map(direction=>{
-        const cost=expansionCost(state,direction);
-        return `<button type="button" data-action="expand" data-value="${direction}" ${state.territory[direction]>=LIMIT?'disabled':''}>
+    this.modal('Construir muralha da vila',`<p class="modal-intro">A muralha de nível 1 e os três portões serão instalados em volta do seu território de <strong>${edge.maxX-edge.minX} × ${edge.maxZ-edge.minZ} m</strong>. A muralha se ajusta quando você amplia o reino.</p>
+      ${state.gold<cost?'<p class="modal-intro">Ouro insuficiente.</p>':''}
+      <div class="modal-actions">${button('buy-village-wall',`Construir por ${fmt.format(cost)} de ouro`,'hammer',`class="primary" ${state.gold<cost?'disabled':''}`)}</div>`);
+  }
+  get territoryOpen() {
+    return this.popup.open&&this.popup.classList.contains('territory-panel');
+  }
+  showTerritory(state,selected) {
+    this.modal('Expandir território',`<p class="modal-intro">Escolha onde adicionar uma faixa de terreno plano de ${BAND} m.</p>
+      <div class="option-grid" role="group" aria-label="Direção da expansão">${directions.map(direction=>
+        `<button type="button" data-action="preview-expansion" data-value="${direction}" aria-pressed="false">
           ${icon('arrow-'+{north:'up',east:'right',south:'down',west:'left'}[direction])}
-          <span>${names[direction]}<small>${state.territory[direction]>=LIMIT?'Limite atingido':fmt.format(cost)+' ouro'}</small></span></button>`;
-      }).join('')}</div>`);
+          <span>${names[direction]}<small></small></span></button>`
+      ).join('')}</div>
+      <div class="modal-actions"><span class="territory-balance" role="status"></span>
+        ${button('expand','Comprar faixa','coins','class="primary" disabled')}</div>`,'territory-panel');
+    this.updateTerritory(state,selected);
+  }
+  updateTerritory(state,selected) {
+    for(const option of this.popup.querySelectorAll('[data-action="preview-expansion"]')){
+      const {value}=option.dataset;
+      option.disabled=state.territory[value]>=LIMIT;
+      option.setAttribute('aria-pressed',String(value===selected));
+      option.querySelector('small').textContent=option.disabled?'Limite atingido':fmt.format(expansionCost(state,value))+' ouro';
+    }
+    const purchase=this.popup.querySelector('[data-action="expand"]');
+    const cost=selected?expansionCost(state,selected):Infinity;
+    purchase.disabled=!selected||state.gold<cost||state.territory[selected]>=LIMIT;
+    purchase.dataset.value=selected||'';
+    purchase.querySelector('span').textContent=selected?'Comprar ao '+names[selected].toLowerCase():'Comprar faixa';
+    const status=this.popup.querySelector('.territory-balance');
+    const balance=fmt.format(state.gold)+' ouro disponível';
+    const message=!selected?'Limite de expansão atingido.':
+      state.gold<cost?balance+' · Saldo insuficiente':balance;
+    if(status.textContent!==message)status.textContent=message;
   }
   showSettings(state,slot,localProfile,online,conflicted) {
     this.modal('Configurações',`<form id="settings-form" class="settings-form"><label>Nome do reino<input name="realm" required maxlength="38" value="${escapeHTML(state.name)}"></label>

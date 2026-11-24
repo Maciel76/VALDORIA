@@ -8,9 +8,11 @@ import { drawMinimap } from './ui/atlas-art.js';
 import { loadLandmarks } from './models/library.js';
 import { WorldView } from './world/view.js';
 import { AmbientSound } from './world/audio.js';
+import { BAND,directions,expansionBounds,LIMIT } from './world/terrain-data.js';
 import { SaveManager,profile,recoverProfile,register,request } from './storage/saves.js';
 import { collectTax, expansionCost, upgradeStarter, validatedKingdom } from './core/kingdom.js';
 import { castleTypes, gates } from './core/geometry.js';
+import { isFixedFortification,isVillageWall,villageWallId } from './core/fortifications.js';
 import { Editor } from './core/editor.js';
 
 const root = document.querySelector('#app');
@@ -26,10 +28,12 @@ const editor = new Editor(view,hud,changed);
 const popups = [hud.catalogue,hud.popup,atlas.dialog];
 const active = () => guest?.state || state;
 const modalsOpen = () => popups.some(dialog=>dialog.open);
+const prepareModels = objects => view && loadLandmarks(objects);
 const SLOT_KEY='reino-valdoria-slot';
 const previousSlot=localStorage.getItem(SLOT_KEY);
 let state, slot=['own','empty','demo','backup'].includes(previousSlot)?previousSlot:'own';
 let guest=null, locked=false, refreshBusy=false, lastMini=0, lastAim=0;
+let territoryDirection=null;
 
 function changed({modified=false,created=[],refreshRoutes=true}={}) {
   if(!active())return;
@@ -43,6 +47,7 @@ function updateHUD() {
   const camera = view?.navigation;
   hud.state(active(),editor.history.length,camera?.mode==='walk'?camera.position:camera?.orbit.target,guest?.kingdom);
   hud.tax(active());
+  if(hud.territoryOpen)hud.updateTerritory(state,territoryDirection);
 }
 
 function tell(message) {
@@ -67,7 +72,11 @@ async function connectProfile() {
     const remote=await saves.prepareSync();
     if(!remote)return online;
     if(saves.conflicted)showConflict(remote);
-    else {state=upgradeStarter(remote);editor.start(state);cameraMode('orbit');view?.navigation.overview(state);changed();}
+    else {
+      const next=upgradeStarter(remote);
+      await prepareModels(next.objects);
+      state=next;editor.start(state);cameraMode('orbit');view?.navigation.overview(state);changed();
+    }
   } catch (error) { if(error.status!==401)friendlyError(error); }
   return online;
 }
@@ -119,7 +128,9 @@ async function switchSlot(next) {
     tell('Ainda não há uma cópia de conflito.');
     return;
   }
-  slot=next;state=slot==='own'?upgradeStarter(replacement):replacement;
+  const nextState=next==='own'?upgradeStarter(replacement):replacement;
+  await prepareModels(nextState.objects);
+  slot=next;state=nextState;
   localStorage.setItem(SLOT_KEY,slot);
   editor.start(state);cameraMode('orbit');view?.navigation.overview(state);changed();
   hud.popup.close();
@@ -131,6 +142,7 @@ async function visit(id) {
   const record=await request('/world/'+id);
   const valid=validatedKingdom(record.state);
   if(!valid)throw new Error('O reino publicado tem um salvamento inválido.');
+  await prepareModels(valid.objects);
   if(!guest)await saves.save(state);
   editor.cancel();editor.select(null);
   guest={state:valid,kingdom:record.kingdom};
@@ -187,7 +199,33 @@ async function action(which,value) {
         hud.toggleCatalogue();
       }
       break;
-    case 'item': if(!guest)editor.startPlacement(value); break;
+    case 'item':
+      if(!guest){
+        if(value==='villageWall'){
+          editor.cancel();
+          hud.toggleCatalogue(false);
+          hud.showVillageWallPurchase(state);
+          break;
+        }
+        const loading=prepareModels([{type:value}]);
+        if(loading)await loading;
+        editor.startPlacement(value);
+      }
+      break;
+    case 'buy-village-wall':
+      if(!guest){
+        const kingdom=state;
+        await prepareModels([{id:villageWallId,type:'villageWall',wallLevel:1}]);
+        if(state!==kingdom||guest)break;
+        hud.popup.close();
+        if(editor.apply({kind:'buy-village-wall'})){
+          cameraMode('orbit');
+          view?.navigation.focusVillageWall(state.territory);
+          editor.select(villageWallId);
+          hud.notify('Muralha da vila e três portões construídos.');
+        }
+      }
+      break;
     case 'cancel': editor.cancel(); break;
     case 'rotate': if(!guest)editor.rotate(1); break;
     case 'line': editor.setLine(); break;
@@ -196,6 +234,32 @@ async function action(which,value) {
     case 'move': if(!guest)editor.moveSelected(); break;
     case 'rotate-object': if(!guest)editor.rotate(1); break;
     case 'delete': if(!guest)editor.remove(); break;
+    case 'upgrade-walls':
+    case 'upgrade-gate':
+      if(!guest&&editor.selected){
+        const selected=editor.selected;
+        await prepareModels([{...selected,wallLevel:2}]);
+        if(editor.selected===selected)editor.upgradeFortification(which);
+      }
+      break;
+    case 'fortifications':
+      if(!guest&&state.objects.some(isVillageWall)){
+        editor.cancel();
+        if(document.pointerLockElement)document.exitPointerLock();
+        hud.showFortifications(state);
+      }
+      break;
+    case 'focus-fortification': {
+      if(guest)return;
+      const structure=state.objects.find(object=>object.id===value&&isFixedFortification(object));
+      if(!structure)return;
+      hud.popup.close();
+      cameraMode('orbit');
+      if(isVillageWall(structure))view?.navigation.focusVillageWall(state.territory);
+      else view?.navigation.focusVillageGate(structure);
+      editor.select(structure.id);
+      break;
+    }
     case 'gate': firstGate(); break;
     case 'clear-selection': editor.select(null); break;
     case 'settings': hud.showSettings(active(),slot,profile(),saves.online,saves.conflicted); break;
@@ -207,16 +271,32 @@ async function action(which,value) {
       changed({modified:true,refreshRoutes:false});
       break;
     case 'territory':
-      if(!guest){if(view?.terrain)view.terrain.border.visible=true;hud.showTerritory(state);}
+      if(!guest){
+        if(document.pointerLockElement)document.exitPointerLock();
+        view?.navigation.keys.clear();
+        territoryDirection=directions.find(direction=>state.territory[direction]<LIMIT)??null;
+        hud.showTerritory(state,territoryDirection);
+        view?.showTerritory(territoryDirection,hud.popup);
+      }
+      break;
+    case 'preview-expansion':
+      if(!guest&&hud.territoryOpen&&value!==territoryDirection){
+        territoryDirection=value;
+        hud.updateTerritory(state,value);
+        view?.showTerritory(value,hud.popup);
+      }
       break;
     case 'expand': {
-      if(guest)return;
+      if(guest||!hud.territoryOpen||value!==territoryDirection)return;
+      const strip=expansionBounds(state.territory,value);
       const cost=expansionCost(state,value);
-      if(editor.apply({kind:'expand',direction:value})){
-        view?.markObject(editor.selected);
-        editor.updatePreview();
-        hud.notify(`Território ampliado em 36 m por ${cost.toLocaleString('pt-BR')} ouro.`);
+      if(strip&&editor.apply({kind:'expand',direction:value})){
         hud.popup.close();
+        cameraMode('orbit');
+        view?.showPurchasedExpansion(strip);
+        editor.select(editor.selected?.id);
+        editor.updatePreview();
+        hud.notify(`Faixa de ${BAND} m liberada por ${cost.toLocaleString('pt-BR')} ouro.`);
       }
       break;
     }
@@ -240,7 +320,9 @@ async function action(which,value) {
     case 'resolve': showConflict(await request('/kingdom'));break;
     case 'remote-version': {
       const remote=await request('/kingdom');
-      state=upgradeStarter(await saves.useRemote(remote));
+      const next=upgradeStarter(await saves.useRemote(remote));
+      await prepareModels(next.objects);
+      state=next;
       editor.start(state);hud.popup.close();changed();break;
     }
     case 'local-version':
@@ -265,7 +347,7 @@ async function action(which,value) {
 
 function run(which,value) {
   if(locked)return;
-  const asyncActions=['publish','unpublish','visit','slot','remote-version','local-version','save'];
+  const asyncActions=['publish','unpublish','visit','slot','remote-version','local-version','save','item','buy-village-wall','upgrade-walls','upgrade-gate'];
   locked=asyncActions.includes(which);
   action(which,value).catch(friendlyError).finally(()=>{if(asyncActions.includes(which))locked=false;});
 }
@@ -293,10 +375,12 @@ root.addEventListener('submit',async event=>{
   }
 });
 root.addEventListener('pointerdown',()=>{if(active()?.sound)audio.set(true).catch(()=>{});},{capture:true});
-hud.popup.addEventListener('close',()=>{if(view?.terrain)view.terrain.border.visible=false;});
+hud.popup.addEventListener('close',()=>{
+  if(!hud.territoryOpen&&view?.territoryPreview)view.showTerritory(null,null);
+});
 
 if(view){
-  view.suspended=modalsOpen;
+  view.suspended=()=>modalsOpen()&&!hud.territoryOpen;
   let pointerDown=null;
   const canvas=view.canvas;
   canvas.addEventListener('contextmenu',event=>event.preventDefault());
@@ -336,7 +420,6 @@ if(view){
     for(const type of ['pointerup','pointercancel','lostpointercapture'])button.addEventListener(type,()=>view.navigation.keys.delete(key));
   });
   view.onFrame=t=>{
-    if(editor.selected)hud.positionSelection(view.projectSelection());
     if(t-lastMini>.7){
       lastMini=t;
       const camera=view.navigation;
@@ -395,8 +478,10 @@ setInterval(async ()=>{
 },18000);
 
 async function initialize() {
-  const [loaded] = await Promise.all([saves.load(slot,slot==='demo'?'demo':slot==='own'?'starter':'empty'),view?loadLandmarks():null]);
-  state=slot==='own'?upgradeStarter(loaded):loaded;
+  const loaded=await saves.load(slot,slot==='demo'?'demo':slot==='own'?'starter':'empty');
+  const initial=slot==='own'?upgradeStarter(loaded):loaded;
+  await prepareModels(initial.objects);
+  state=initial;
   view?.navigation.overview(state);
   editor.start(state);changed();hud.saved('Salvo neste navegador');
   await connectProfile();

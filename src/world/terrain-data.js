@@ -14,20 +14,36 @@ export const bounds = territory => ({
   minZ: -BASE - BAND * territory.north, maxZ: BASE + BAND * territory.south
 });
 
+export function expansionBounds(territory,direction) {
+  const edge=bounds(territory);
+  switch(direction){
+    case 'north': return {...edge,minZ:edge.minZ-BAND,maxZ:edge.minZ};
+    case 'east': return {...edge,minX:edge.maxX,maxX:edge.maxX+BAND};
+    case 'south': return {...edge,minZ:edge.maxZ,maxZ:edge.maxZ+BAND};
+    case 'west': return {...edge,minX:edge.minX-BAND,maxX:edge.minX};
+    default: return null;
+  }
+}
+
+export const insideTerritory = (x,z,edge) =>
+  x>=edge.minX && x<=edge.maxX && z>=edge.minZ && z<=edge.maxZ;
+export const outsideOriginalTerritory = (x,z) => Math.abs(x)>BASE || Math.abs(z)>BASE;
+
 const transitionWidth = 12;
 
 function reliefScale(x,z,territory) {
-  if (!territory || x < -BASE-BAND*territory.west || x > BASE+BAND*territory.east ||
-      z < -BASE-BAND*territory.north || z > BASE+BAND*territory.south) return 1;
+  if (!territory) return 1;
+  const {minX,maxX,minZ,maxZ}=bounds(territory);
 
-  // Blend on the original side of each purchased edge so the new land is level.
+  // Level the purchased land and blend back into the hills on both sides.
   const fromEdge = Math.max(
     territory.west ? -BASE-x : -Infinity,
     territory.east ? x-BASE : -Infinity,
     territory.north ? -BASE-z : -Infinity,
     territory.south ? z-BASE : -Infinity
   );
-  const t = Math.min(1,Math.max(0,-fromEdge/transitionWidth));
+  const distance=Math.max(0,-fromEdge,minX-x,x-maxX,minZ-z,z-maxZ);
+  const t = Math.min(1,distance/transitionWidth);
   return t*t*(3-2*t);
 }
 
@@ -75,7 +91,7 @@ export function landscapeCell(cx,cz,seed) {
   const rng = random(seed + cx * 9941 + cz * 14971);
   const points = [];
   for (let i=0; i<44; i++) {
-    const x = cx*36 + rng()*36, z = cz*36 + rng()*36;
+    const x = cx*BAND + rng()*BAND, z = cz*BAND + rng()*BAND;
     const chance = rng(), variation = rng(), yaw = rng()*Math.PI*2;
     const far = Math.hypot(x*.86,z);
     if (inWater(x,z,seed) || Math.abs(x-riverX(z,seed)) < 9) continue;
@@ -87,5 +103,10 @@ export function landscapeCell(cx,cz,seed) {
     }
   }
   return points;
+}
+
+export function ownedLandscapeCell(cx,cz,seed,edge) {
+  const x=(cx+.5)*BAND,z=(cz+.5)*BAND;
+  return insideTerritory(x,z,edge) && !outsideOriginalTerritory(x,z) ? landscapeCell(cx,cz,seed) : [];
 }
 

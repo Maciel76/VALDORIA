@@ -2,11 +2,16 @@ import * as THREE from 'three';
 import { catalogue } from '../core/catalog.js';
 import { castleTypes, containsPoint, worldBoxes, angleOf } from '../core/geometry.js';
 import { random } from './terrain-data.js';
-import { supportHeightWrapper } from './walk.js';
+import { CollisionGrid, supportHeightWrapper } from './walk.js';
+import { worldObjects } from './perimeter.js';
 import { group,cube,cyl,ball,beam,optimize,cloneModel } from '../models/kit.js';
 import { cart } from '../models/props.js';
 
-export function makeRouteGraph(state, blocked=(x,z)=>state.objects.some(o=>containsPoint(o,x,z,.34))) {
+export function makeRouteGraph(state, blocked) {
+  if(!blocked){
+    const collision=new CollisionGrid(worldObjects(state));
+    blocked=(x,z)=>collision.get(x,z).some(object=>containsPoint(object,x,z,.34));
+  }
   const nodes=new Map();
   const edges=new Map();
   const cell=(x,z)=>Math.floor(x/2)+','+Math.floor(z/2);
@@ -213,21 +218,21 @@ export class Traffic {
     for(const person of this.people.splice(count))person.p.removeFromParent();
     for(const person of this.people){
       const before=person.p.position;
-      if(terrainChanged)before.y=supportHeightWrapper(before.x,before.z,state);
+      if(terrainChanged)before.y=supportHeightWrapper(before.x,before.z,state,undefined,this.surfaces);
       if(this.graph.nodes.has(person.current.id) && person.path.every(node=>this.graph.nodes.has(node.id)) &&
         person.path.every((node,i)=>this.graph.edges.get(i?person.path[i-1].id:person.current.id)?.includes(node.id)))continue;
       const nearest=this.nodes.filter(node=>Math.hypot(node.x-before.x,node.z-before.z)<8)
         .sort((a,b)=>Math.hypot(a.x-before.x,a.z-before.z)-Math.hypot(b.x-before.x,b.z-before.z));
       const accessible=nearest.find(node=>this.graph.validLine({x:before.x,z:before.z},node));
       person.current=accessible||nearest[0]||this.nodes[0];person.path=accessible?[accessible]:[];
-      if(!accessible)before.set(person.current.x,supportHeightWrapper(person.current.x,person.current.z,state),person.current.z);
+      if(!accessible)before.set(person.current.x,supportHeightWrapper(person.current.x,person.current.z,state,undefined,this.surfaces),person.current.z);
       person.wait=.9+this.rng()*.8;
     }
     for(let i=this.people.length;i<count;i++){
       const type=kinds[i%kinds.length], person=character(type);
       const spawn=this.nodes[Math.floor(this.rng()*this.nodes.length)];
       const offset=(this.rng()-.5)*.54;
-      person.p.position.set(spawn.x+offset,supportHeightWrapper(spawn.x,spawn.z,state),spawn.z-offset);
+      person.p.position.set(spawn.x+offset,supportHeightWrapper(spawn.x,spawn.z,state,undefined,this.surfaces),spawn.z-offset);
       person.p.rotation.y=this.rng()*Math.PI*2;person.p.visible=true;
       const speed={wagon:1.6,horse:1.9,rider:1.72,hen:.66,sheep:.83}[type]||1.17;
       const entry={...person,type,speed,current:spawn,offset,path:[],phase:i*.58,wait:.05+i*.22,inside:false,walking:false};
@@ -271,7 +276,7 @@ export class Traffic {
               Math.hypot(other.p.position.x-x,other.p.position.z-z)<.43);
             if(!crowd && !this.isBlocked(x,z,.17)){
               person.p.rotation.y=Math.atan2(dx,dz);
-              person.p.position.set(x,supportHeightWrapper(x,z,this.state),z);
+              person.p.position.set(x,supportHeightWrapper(x,z,this.state,undefined,this.surfaces),z);
               person.walking=true;
               person.blocked=0;
             } else {

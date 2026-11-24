@@ -1,5 +1,7 @@
 import { catalogue } from './catalog.js';
-import { bounds, inWater, landscapeCell, terrainHeight, waterLevel } from '../world/terrain-data.js';
+import { isPerimeterPiece,isVillageWall } from './fortifications.js';
+import { onVillagePerimeter,worldObjects } from '../world/perimeter.js';
+import { BAND, bounds, inWater, ownedLandscapeCell, terrainHeight, waterLevel } from '../world/terrain-data.js';
 
 const halfTurn = Math.PI / 2;
 export const angleOf = rotation => rotation * halfTurn;
@@ -44,6 +46,13 @@ function localBoxes(object) {
       return [...castleWalls,...hallWalls,...castleTowers.map(([x,z])=>box(x,z,4,4)),
         box(-3.7,12,2.3,3.8),box(3.7,12,2.3,3.8),box(7.3,-9.1,4.55,4.55),
         ...(!object.open ? [box(0,12,5,1.1),box(0,15,4.6,1)] : [])];
+    case 'wall':
+    case 'wallShort':
+      if(isPerimeterPiece(object))return [box(0,0,object.span??w,.98)];
+      break;
+    case 'squareTower':
+      if(isPerimeterPiece(object))return [box(0,0,6,.98),box(0,0,.98,6),box(0,0,3,3)];
+      break;
     case 'cityGate':
       return [box(-3,0,2,2.8),box(3,0,2,2.8),
         ...(!object.open ? [box(0,.18,4,.32)] : [box(-1.9,-.83,.27,1.95),box(1.9,-.83,.27,1.95)])];
@@ -62,7 +71,8 @@ function localBoxes(object) {
     case 'manor': return [box(0,-2,8,7),box(-6,-1,4,8),box(6,-1,4,8)];
     case 'barracks': return [box(0,-2,w-1,5)];
     case 'arch': return [box(-w/2+.18,0,.36,.6),box(w/2-.18,0,.36,.6)];
-    case 'steps': return [];
+    case 'steps':
+    case 'villageWall': return [];
   }
   if (category === 'roads' || beds.has(id)) return [];
   return [box(0,0,w * (category==='decor' ? .88 : category==='housing' || category==='civic' || category==='trade' ? .86 : 1),
@@ -79,9 +89,10 @@ export function worldBoxes(object, rectangles = localBoxes(object)) {
 
 export const footprint = object => {
   const item = catalogue[object.type];
-  return worldBoxes(object,[box(0,0,item.w,item.d)])[0];
+  return worldBoxes(object,[box(0,0,object.span??item.w,item.d)])[0];
 };
 const overlaps = (a,b) => Math.abs(a.x-b.x) < (a.w+b.w)/2-.016 && Math.abs(a.z-b.z) < (a.d+b.d)/2-.016;
+export const collidersOverlap = (first,second) => first.some(a=>second.some(b=>overlaps(a,b)));
 const inside = (rect,x,z,r=0) => Math.abs(rect.x-x) < rect.w/2+r && Math.abs(rect.z-z) < rect.d/2+r;
 
 function baseHeight(object,seed,territory) {
@@ -134,7 +145,7 @@ export function supportHeight(x,z,objects,seed,exclude,maxY=Infinity,forPlacemen
           surface = baseHeight(object,seed,territory)+.10;
         }
       }
-    } else if (straightWalls.has(object.type) && !forPlacement && inside(footprint(object),x,z)) {
+    } else if (straightWalls.has(object.type) && !isPerimeterPiece(object) && !forPlacement && inside(footprint(object),x,z)) {
       surface = baseHeight(object,seed,territory)+4.05;
     }
     if (surface !== undefined && surface <= maxY && (surface > height || castleTypes.has(object.type) && !inWater(x,z,seed))) height = surface;
@@ -157,7 +168,7 @@ export function containsPoint(object,x,z,radius=.24,y=-Infinity,seed=0,territory
     return rails.some(rect=>inside(rect,x,z,radius));
   }
   const elevated = (object.type === 'keep' && y > base+4.55) ||
-    (straightWalls.has(object.type) && y > base+3.95);
+    (straightWalls.has(object.type) && !isPerimeterPiece(object) && y > base+3.95);
   const side = catalogue[object.type].d*.4;
   const walkBoxes = elevated ? (object.type === 'keep'
     ? worldBoxes(object,[box(-15.7,0,.32,29),box(15.7,0,.32,29),box(0,-14.9,30,.32),...hallWalls])
@@ -179,19 +190,19 @@ export function checkPlacement(state, candidate, {ignore,player, staged=[]}={}) 
     return 'Afaste-se para construir.';
   }
 
-  for (const object of [...state.objects,...staged]) {
+  for (const object of [...worldObjects(state),...staged]) {
     if (ignore && object.id === ignore) continue;
     const other = catalogue[object.type];
     const junction = item.category==='roads' && other.category==='roads';
     if (junction) {
       if (candidate.x === object.x && candidate.z === object.z) return 'Já existe um piso aqui.';
       if (item.id!=='bridge' && other.id!=='bridge') continue;
-      if (!nextBoxes.some(a=>worldBoxes(object).some(b=>overlaps(a,b)))) continue;
+      if (!collidersOverlap(nextBoxes,worldBoxes(object))) continue;
     }
     const joined = modular.has(item.id) && modular.has(other.id);
     const decoration = item.support || other.support;
     const occupied = (joined || decoration) ?
-      nextBoxes.some(a=>worldBoxes(gates.has(other.id)?{...object,open:true}:object).some(b=>overlaps(a,b))) :
+      collidersOverlap(nextBoxes,worldBoxes(gates.has(other.id)?{...object,open:true}:object)) :
       overlaps(claim,footprint(object));
     const floorCovered = !nextBoxes.length && item.category === 'roads' &&
       worldBoxes(object).some(rect=>inside(rect,candidate.x,candidate.z));
@@ -204,9 +215,11 @@ export function checkPlacement(state, candidate, {ignore,player, staged=[]}={}) 
     if (occupied || floorCovered || gardenConflict || tooNearBedEdge) return 'A área está ocupada.';
   }
 
-  for (let cz=Math.floor((claim.z-claim.d/2-2)/36);cz<=Math.floor((claim.z+claim.d/2+2)/36);cz++) {
-    for (let cx=Math.floor((claim.x-claim.w/2-2)/36);cx<=Math.floor((claim.x+claim.w/2+2)/36);cx++) {
-      if (landscapeCell(cx,cz,state.seed).some(p=>inside(claim,p.x,p.z,p.collider))) return 'Há vegetação ou rocha no local.';
+  const enclosed=state.objects.some(isVillageWall);
+  for (let cz=Math.floor((claim.z-claim.d/2-2)/BAND);cz<=Math.floor((claim.z+claim.d/2+2)/BAND);cz++) {
+    for (let cx=Math.floor((claim.x-claim.w/2-2)/BAND);cx<=Math.floor((claim.x+claim.w/2+2)/BAND);cx++) {
+      if (ownedLandscapeCell(cx,cz,state.seed,limit).some(p=>inside(claim,p.x,p.z,p.collider) &&
+        !(enclosed&&onVillagePerimeter(p.x,p.z,state.territory,p.collider+2.4)))) return 'Há vegetação ou rocha no local.';
     }
   }
   return '';

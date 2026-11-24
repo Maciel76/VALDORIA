@@ -1,5 +1,6 @@
 import { random, terrainHeight, inWater, bounds } from '../world/terrain-data.js';
 import { catalogue } from '../core/catalog.js';
+import { worldObjects } from '../world/perimeter.js';
 import { footprint, gates } from '../core/geometry.js';
 
 const islands=[
@@ -163,7 +164,7 @@ export function drawMinimap(canvas,state,position) {
     const size=castle?7:.95;
     ctx.fillRect(x-size/2,z-size/2,size,size);
   }
-  for(const object of state.objects){
+  for(const object of worldObjects(state)){
     if(catalogue[object.type].category!=='walls')continue;
     const plot=footprint(object), x=(plot.x-edge.minX)*sx,z=(plot.z-edge.minZ)*sz;
     const width=Math.max(1,plot.w*sx),height=Math.max(1,plot.d*sz);
