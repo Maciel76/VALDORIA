@@ -1,6 +1,11 @@
+import { availableLots,lotBounds,lotRectangle,ownsLotRectangle,usesLots } from './lots.js';
+
 export const BASE = 180;
 export const BAND = 36;
 export const LIMIT = 5;
+const landscapeSamples = 44;
+const originalCellRadius = BASE / BAND;
+export const MAX_NATURAL_OBSTACLES = (originalCellRadius * 2) ** 2 * landscapeSamples;
 export const directions = ['north', 'east', 'south', 'west'];
 export const riverX = (z, seed) => 59 + Math.sin(z / 62 + seed % 11 * 0.15) * 16 + Math.sin(z / 22) * 3.8;
 export const riverWidth = z => 11.5 + 2 * Math.cos(z / 33);
@@ -9,12 +14,22 @@ export const waterLevel = -1.05;
 export const terrainBaseLevel = -3.7;
 export const terrainCellSize = 3;
 export const riverSurfaceWidth = z => riverWidth(z)*.54;
-export const bounds = territory => ({
+export const bounds = territory => usesLots(territory)?lotBounds(territory):({
   minX: -BASE - BAND * territory.west, maxX: BASE + BAND * territory.east,
   minZ: -BASE - BAND * territory.north, maxZ: BASE + BAND * territory.south
 });
+export const terrainBounds=territory=>usesLots(territory)?{minX:-BASE,maxX:BASE,minZ:-BASE,maxZ:BASE}:bounds(territory);
+
+export function ownsRectangle(territory,rect){
+  if(usesLots(territory))return ownsLotRectangle(territory,rect);
+  const edge=bounds(territory);
+  return rect.minX>=edge.minX&&rect.maxX<=edge.maxX&&rect.minZ>=edge.minZ&&rect.maxZ<=edge.maxZ;
+}
+
+export const expansionOptions=territory=>usesLots(territory)?availableLots(territory):directions.filter(side=>territory[side]<LIMIT);
 
 export function expansionBounds(territory,direction) {
+  if(usesLots(territory))return availableLots(territory).includes(direction)?lotRectangle(direction):null;
   const edge=bounds(territory);
   switch(direction){
     case 'north': return {...edge,minZ:edge.minZ-BAND,maxZ:edge.minZ};
@@ -32,7 +47,7 @@ export const outsideOriginalTerritory = (x,z) => Math.abs(x)>BASE || Math.abs(z)
 const transitionWidth = 12;
 
 function reliefScale(x,z,territory) {
-  if (!territory) return 1;
+  if (!territory||usesLots(territory)) return 1;
   const {minX,maxX,minZ,maxZ}=bounds(territory);
 
   // Level the purchased land and blend back into the hills on both sides.
@@ -60,21 +75,46 @@ export function terrainHeight(x,z,seed,territory) {
   return (-2.5 + Math.min(1, Math.max(0, distance / 7)) * .8) * (1-edge) + (rolling+small) * edge * relief;
 }
 
-export function visibleTerrainHeight(x,z,seed,territory) {
-  const edge=bounds(territory);
-  const px=Math.min(edge.maxX,Math.max(edge.minX,x));
-  const pz=Math.min(edge.maxZ,Math.max(edge.minZ,z));
+export function landHeight(x,z,seed,territory) {
   const step=terrainCellSize;
-  const x0=Math.floor(px/step)*step,z0=Math.floor(pz/step)*step;
-  const u=(px-x0)/step,v=(pz-z0)/step;
+  const x0=Math.floor(x/step)*step,z0=Math.floor(z/step)*step;
+  const u=(x-x0)/step,v=(z-z0)/step;
   const h10=terrainHeight(x0+step,z0,seed,territory);
   const h01=terrainHeight(x0,z0+step,seed,territory);
   // Match the same triangle split as the PlaneGeometry used by the renderer.
   const land=u+v<=1
     ? terrainHeight(x0,z0,seed,territory)*(1-u-v)+h10*u+h01*v
     : terrainHeight(x0+step,z0+step,seed,territory)*(u+v-1)+h10*(1-v)+h01*(1-u);
+  return Math.max(terrainBaseLevel,land);
+}
+
+export function visibleTerrainHeight(x,z,seed,territory) {
+  const edge=terrainBounds(territory);
+  const px=Math.min(edge.maxX,Math.max(edge.minX,x));
+  const pz=Math.min(edge.maxZ,Math.max(edge.minZ,z));
   const water=Math.abs(px-riverX(pz,seed))<riverSurfaceWidth(pz)?waterLevel:-Infinity;
-  return Math.max(terrainBaseLevel,land,water);
+  return Math.max(landHeight(px,pz,seed,territory),water);
+}
+
+export function landHeightRange({x,z,w,d},seed,territory) {
+  const minX=x-w/2,maxX=x+w/2,minZ=z-d/2,maxZ=z+d/2;
+  const step=terrainCellSize;
+  const axis=(lo,hi)=>{
+    const points=[lo,hi];
+    for(let q=Math.ceil(lo/step)*step;q<hi;q+=step)if(q>lo)points.push(q);
+    return points;
+  };
+  let low=Infinity,high=-Infinity;
+  const sample=(px,pz)=>{
+    const height=landHeight(px,pz,seed,territory);
+    low=Math.min(low,height);high=Math.max(high,height);
+  };
+  const rows=axis(minZ,maxZ);
+  for(const px of axis(minX,maxX))for(const pz of rows)sample(px,pz);
+  // Extrema of the clipped terrain triangles can also lie where a diagonal meets the lot edge.
+  for(const px of [minX,maxX])for(const sum of axis(px+minZ,px+maxZ))sample(px,sum-px);
+  for(const pz of [minZ,maxZ])for(const sum of axis(pz+minX,pz+maxX))sample(sum-pz,pz);
+  return {low,high};
 }
 
 export function random(seed) {
@@ -90,19 +130,29 @@ export function random(seed) {
 export function landscapeCell(cx,cz,seed) {
   const rng = random(seed + cx * 9941 + cz * 14971);
   const points = [];
-  for (let i=0; i<44; i++) {
+  for (let i=0; i<landscapeSamples; i++) {
     const x = cx*BAND + rng()*BAND, z = cz*BAND + rng()*BAND;
     const chance = rng(), variation = rng(), yaw = rng()*Math.PI*2;
     const far = Math.hypot(x*.86,z);
     if (inWater(x,z,seed) || Math.abs(x-riverX(z,seed)) < 9) continue;
+    const id=`${cx},${cz}:${i}`;
     if (far > 55 && chance < (far > 98 ? .61 : .25)) {
       const size = 0.65 + variation * 1.1;
-      points.push({x,z,size,yaw,type:variation > .76 ? 'oak' : 'pine',collider:.32*size});
+      points.push({id,x,z,size,yaw,type:variation > .76 ? 'oak' : 'pine',collider:.32*size});
     } else if ((far > 36 && chance > .94) || (far > 48 && chance > .84)) {
-      points.push({x,z,size:.35+variation*.9,yaw,type:'rock',collider:.37});
+      points.push({id,x,z,size:.35+variation*.9,yaw,type:'rock',collider:.37});
     }
   }
   return points;
+}
+
+export const landscapeCellKey = id => id.split(':',1)[0];
+
+export function naturalObstacle(id,seed) {
+  if (typeof id!=='string' || !/^-?\d,-?\d:\d{1,2}$/.test(id)) return null;
+  const [cx,cz]=landscapeCellKey(id).split(',').map(Number);
+  if ([cx,cz].some(value=>value < -originalCellRadius || value >= originalCellRadius)) return null;
+  return landscapeCell(cx,cz,seed).find(point=>point.id===id) ?? null;
 }
 
 export function ownedLandscapeCell(cx,cz,seed,edge) {

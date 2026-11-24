@@ -7,12 +7,13 @@ import { structure } from './architecture.js';
 import { prop } from './props.js';
 import { stockadeFallback,wireStockade } from './stockade.js';
 import { castleWithFortifications,readFortificationKit } from './fortifications.js';
+import { displayWagon,registerCitizenModels } from './citizens.js';
 
 const templates=new Map();
 const fortificationKits=new Map();
 const assetLoads=new Map();
 const assetSources=import.meta.glob('../assets/*.glb',{query:'?url',import:'default',eager:true});
-const landmarkNames={church:'igreja',chapel:'capela',seal:'selo',stockade:'castelo-nivel-1',hinge:'dobradica-palicada',walls1:'muralhas-nivel-1',walls2:'muralhas-nivel-2'};
+const landmarkNames={church:'igreja',chapel:'capela',seal:'selo',stockade:'castelo-nivel-1',hinge:'dobradica-palicada',walls1:'muralhas-nivel-1',walls2:'muralhas-nivel-2',citizens:'moradores-e-carroca'};
 
 export function modelSource(id) {
   const item=catalogue[id];
@@ -62,7 +63,11 @@ function loadAsset(id) {
           object.material.name.startsWith('Campo')?materials.darkStone:materials.gold;
         else object.material=materials[object.material.name] || object.material;
       });
-      if(id==='walls1'||id==='walls2'){
+      if(id==='citizens'){
+        registerCitizenModels(scene);
+        const wagon=displayWagon();
+        if(wagon)templates.set('cart',wagon);
+      } else if(id==='walls1'||id==='walls2'){
         const level=Number(id.at(-1));
         const kit=readFortificationKit(scene);
         if(!kit)throw new Error('Kit de fortificações incompleto.');
@@ -85,7 +90,7 @@ function loadAsset(id) {
 }
 
 export function loadLandmarks(objects) {
-  const needed=new Set();
+  const needed=new Set(['citizens']);
   for(const object of objects){
     if(object.type==='stockade'){
       needed.add('stockade');

@@ -5,6 +5,7 @@ import { bounds,visibleTerrainHeight } from './terrain-data.js';
 import { footprint } from '../core/geometry.js';
 import { isPerimeterPiece,isVillageWall } from '../core/fortifications.js';
 import { villagePerimeterBounds } from './perimeter.js';
+import { usesLots } from './lots.js';
 
 const groundClearance=1.4;
 
@@ -53,6 +54,13 @@ export class KingdomCamera {
   overview(state) {
     if(this.mode==='walk')this.setMode('orbit');
     if(state)this.state=state;
+    if(usesLots(state?.territory)){
+      const {minX,maxX,minZ,maxZ}=bounds(state.territory);
+      const x=(minX+maxX)/2,z=(minZ+maxZ)/2;
+      const distance=Math.max(maxX-minX,maxZ-minZ)*.92*Math.max(1,1.45/this.camera.aspect);
+      this.snap([x,1,z],[x+distance*.66,distance*.93,z+distance*.96]);
+      return;
+    }
     if(state?.objects.some(isVillageWall)){
       this.snap([3,-2,3],[71,92,101]);
       return;
@@ -180,14 +188,13 @@ export class KingdomCamera {
       this.camera.position.y=Math.max(this.position.y+1.66,this.floorAt(this.position.x,this.position.z)+groundClearance);
       this.camera.rotation.set(this.pitch,this.yaw,0,'YXZ');
     }else{
-      if(this.mode==='free'){
-        const r=Number(pressed('d','arrowright'))-Number(pressed('a','arrowleft'));
-        const f=Number(pressed('s','arrowdown'))-Number(pressed('w','arrowup'));
-        if(r||f){
-          const offset=this.orbitCamera.position.clone().sub(this.orbit.target).setY(0).normalize();
-          const move=offset.clone().multiplyScalar(f).add(new THREE.Vector3(offset.z,0,-offset.x).multiplyScalar(r)).multiplyScalar(dt*37);
-          this.orbitCamera.position.add(move);this.orbit.target.add(move);
-        }
+      const right=Number(pressed('d','arrowright'))-Number(pressed('a','arrowleft'));
+      const back=Number(pressed('s','arrowdown'))-Number(pressed('w','arrowup'));
+      if(right||back){
+        const offset=this.orbitCamera.position.clone().sub(this.orbit.target).setY(0).normalize();
+        const speed=dt*37/Math.hypot(right,back);
+        const move=new THREE.Vector3(offset.x*back+offset.z*right,0,offset.z*back-offset.x*right).multiplyScalar(speed);
+        this.orbitCamera.position.add(move);this.orbit.target.add(move);
       }
       this.orbit.update();
       this.updateOrbitView();

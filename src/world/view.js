@@ -1,10 +1,11 @@
 import * as THREE from 'three';
 import { catalogue } from '../core/catalog.js';
-import { isVillageWall,villageWallId } from '../core/fortifications.js';
+import { fortificationRole,isVillageWall,villageWallId } from '../core/fortifications.js';
 import { villageWallSections,worldObjects } from './perimeter.js';
-import { angleOf, footprint, objectHeight } from '../core/geometry.js';
+import { angleOf, buildingFoundation, footprint, hasFoundation, objectHeight } from '../core/geometry.js';
 import { BAND,bounds,expansionBounds,terrainHeight,inWater,waterLevel } from './terrain-data.js';
-import { Terrain } from './terrain-render.js';
+import { availableLots,lotAt,LOT_SIZE,usesLots } from './lots.js';
+import { Terrain,turf,turfColorAt } from './terrain-render.js';
 import { Atmosphere } from './atmosphere.js';
 import { KingdomCamera } from './camera.js';
 import { blockedAt,CollisionGrid,WalkSurfaces } from './walk.js';
@@ -20,12 +21,46 @@ const valid=new THREE.Color('#81cc9b'), invalid=new THREE.Color('#d56156');
 const worldPointer=new THREE.Vector2();
 const sample=new THREE.Vector3();
 const pos=new THREE.Vector3();
+const selectionPoint=new THREE.Vector3();
 const ghostMaterial=new THREE.MeshBasicMaterial({color:valid,transparent:true,opacity:.3,depthWrite:false,side:THREE.DoubleSide});
 const badGhost=ghostMaterial.clone();badGhost.color.copy(invalid);
 const edgeGeometry=new THREE.BufferGeometry().setFromPoints([[-.5,-.5],[.5,-.5],[.5,.5],[-.5,.5],[-.5,-.5]].map(([x,z])=>new THREE.Vector3(x,0,z)));
+const foundationGeometry=new THREE.BoxGeometry(1,1,1,4,1,4);
+const foundationColor=new THREE.Color();
 const lineValid=new THREE.LineBasicMaterial({color:'#a6ec9a',transparent:true,opacity:.92,depthTest:false});
 const lineInvalid=lineValid.clone();lineInvalid.color.set('#f37a63');
 const lineSelect=lineValid.clone();lineSelect.color.set('#e8bc66');
+
+function addFoundation(model,material=turf) {
+  const mesh=new THREE.Mesh(foundationGeometry,material);
+  mesh.name='alicerce';
+  mesh.castShadow=mesh.receiveShadow=!material.transparent;
+  mesh.matrixAutoUpdate=false;
+  model.add(mesh);
+  return mesh;
+}
+
+function positionFoundation(mesh,foundation,object,seed) {
+  const {w,d,base,top,bottom,visible}=foundation;
+  mesh.visible=visible;
+  mesh.scale.set(w,top-bottom,d);
+  mesh.position.y=(top+bottom)/2-base;
+  mesh.updateMatrix();
+  if(!visible||!object)return;
+  if(mesh.geometry===foundationGeometry){
+    mesh.geometry=foundationGeometry.clone();
+    const count=mesh.geometry.attributes.position.count;
+    mesh.geometry.setAttribute('color',new THREE.Float32BufferAttribute(new Float32Array(count*3),3));
+  }
+  const {position,color}=mesh.geometry.attributes;
+  const angle=angleOf(object.rotation),cos=Math.cos(angle),sin=Math.sin(angle);
+  for(let i=0;i<position.count;i++){
+    const x=position.getX(i)*w,z=position.getZ(i)*d;
+    turfColorAt(object.x+x*cos+z*sin,object.z-x*sin+z*cos,seed,foundationColor);
+    color.setXYZ(i,foundationColor.r,foundationColor.g,foundationColor.b);
+  }
+  color.needsUpdate=true;
+}
 
 export class WorldView {
   constructor(host) {
@@ -86,9 +121,13 @@ export class WorldView {
     clearTimeout(this.expansionTimer);
     this.territoryPreview=panel?{direction,panel}:null;
     this.hud.visible=this.preview.visible=!panel;
+    this.navigation.orbit.enabled=!panel&&this.navigation.mode!=='walk';
     if(!this.terrain)return;
-    this.terrain.border.visible=Boolean(panel);
-    this.terrain.showExpansion(panel?expansionBounds(this.state.territory,direction):null,this.state.territory);
+    const {territory}=this.state;
+    const lots=usesLots(territory);
+    this.terrain.border.visible=Boolean(panel)&&!lots;
+    this.terrain.showLots(panel&&lots?territory:null,lots?availableLots(territory):[]);
+    this.terrain.showExpansion(panel?expansionBounds(territory,direction):null,territory);
   }
   showPurchasedExpansion(strip) {
     this.showTerritory(null,null);
@@ -100,8 +139,9 @@ export class WorldView {
     const {minX,maxX,minZ,maxZ}=bounds(this.state.territory);
     const {width,height,top}=this.canvas.getBoundingClientRect();
     const available=Math.max(1,this.territoryPreview.panel.getBoundingClientRect().top-top);
-    const scale=Math.max((maxX-minX+BAND*2)/Math.max(1,width-24),
-      (maxZ-minZ+BAND*2)/Math.max(1,available-24));
+    const padding=usesLots(this.state.territory)?LOT_SIZE:BAND;
+    const scale=Math.max((maxX-minX+padding*2)/Math.max(1,width-24),
+      (maxZ-minZ+padding*2)/Math.max(1,available-24));
     const camera=this.territoryCamera;
     const x=(minX+maxX)/2,z=(minZ+maxZ)/2;
     camera.left=-width*scale/2;
@@ -112,6 +152,15 @@ export class WorldView {
     camera.lookAt(x,0,z);
     camera.updateProjectionMatrix();
     return camera;
+  }
+  pickExpansion(event){
+    const rect=this.canvas.getBoundingClientRect(),camera=this.frameTerritory();
+    camera.updateMatrixWorld();
+    worldPointer.set((event.clientX-rect.left)/rect.width*2-1,1-(event.clientY-rect.top)/rect.height*2);
+    this.ray.setFromCamera(worldPointer,camera);
+    const {x,z}=this.ray.ray.origin;
+    const id=lotAt(x,z);
+    return availableLots(this.state.territory).includes(id)?id:null;
   }
   adjustResolution(fps) {
     if(this.quality==='high')return;
@@ -128,7 +177,7 @@ export class WorldView {
       this.resize();
     }
   }
-  blocked(x,z,radius,y,objects) {
+  blocked(x,z,radius,y,swimming) {
     if(!this.state)return false;
     const walking=typeof y==='number';
     return blockedAt(this.state,this.terrain,this.collision,x,z,radius,y,walking?object=>{
@@ -137,7 +186,7 @@ export class WorldView {
       const bridge=entry.motion.find(node=>node.gate==='bridge');
       const leaf=entry.motion.find(node=>node.gate==='leaf');
       return bridge?Math.abs(bridge.node.rotation.x)<.32:leaf?Math.abs(leaf.node.rotation.y)>1.11:object.open;
-    }:undefined,this.surfaces);
+    }:undefined,this.surfaces,swimming);
   }
   placeAt(evt) {
     if(!this.state)return null;
@@ -169,17 +218,23 @@ export class WorldView {
     }
     const hit=this.ray.intersectObjects(models,true)
       .find(({object})=>object.isMesh&&object.name!=='fumaça');
+    const groundDistance=ground?this.ray.ray.origin.distanceTo(ground):Infinity;
+    const obstacle=this.terrain.pickObstacle(this.ray,Math.min(hit?.distance??Infinity,groundDistance+.4));
+    if(obstacle)return obstacle;
     if(hit){
       let model=hit.object;
       while(model.parent && !model.userData.uid)model=model.parent;
       if(model.userData.uid)return model.userData.uid;
     }
     if(!ground)return null;
-    return this.state.objects.findLast(o=>{
+    const road=this.state.objects.findLast(o=>{
       if(!stoneTypes.has(o.type))return false;
       const rect=footprint(o);
       return Math.abs(ground.x-o.x)<rect.w/2 && Math.abs(ground.z-o.z)<rect.d/2;
-    })?.id ?? null;
+    });
+    if(road)return road.id;
+    const radius=Math.min(1.25,groundDistance*Math.tan(THREE.MathUtils.degToRad(this.camera.fov/2))*10/this.host.clientHeight);
+    return this.terrain.rockNear(ground.x,ground.z,radius);
   }
   setPreview(points,object,failed) {
     this.clearPreview();
@@ -187,7 +242,10 @@ export class WorldView {
     const source=template(object);
     const reuse=points.length>15;
     for(const [i,point] of points.entries()){
-      const y=objectHeight({...point,type},this.state.objects,this.state.seed,this.state.territory);
+      const object={...point,type};
+      const {objects,seed,territory}=this.state;
+      const foundation=buildingFoundation(object,seed,territory);
+      const y=foundation?.base??objectHeight(object,objects,seed,territory);
       const mark=new THREE.Line(edgeGeometry,failed[i]?lineInvalid:lineValid);
       const item=catalogue[type];mark.scale.set(item.w,1,item.d);mark.position.set(point.x,y+.12,point.z);
       mark.rotation.y=angleOf(point.rotation);mark.renderOrder=3;this.preview.add(mark);
@@ -197,16 +255,85 @@ export class WorldView {
         if(object.isMesh){object.material=failed[i]?badGhost:ghostMaterial;object.castShadow=object.receiveShadow=false;}
         if(object.isPointLight)object.visible=false;
       });
+      if(foundation?.visible)positionFoundation(addFoundation(ghost,failed[i]?badGhost:ghostMaterial),foundation);
       ghost.position.set(point.x,y,point.z);ghost.rotation.y=angleOf(point.rotation);
       this.preview.add(ghost);
     }
   }
-  clearPreview(){this.preview.clear();}
-  markObject(object) {
+  setMovePreview(object,point,failed) {
+    if(this.moving?.id!==object.id){
+      this.clearPreview();
+      const entry=this.drawables.get(object.id);
+      const model=entry?.model??makeModel(object);
+      const marker=new THREE.Line(edgeGeometry,lineValid);
+      const {w,d}=catalogue[object.type];
+      marker.scale.set(w,1,d);marker.renderOrder=3;
+      this.moving={id:object.id,entry,model,marker};
+      if(entry){
+        this.finishConstruction(entry);
+        entry.birth=null;
+        for(const mesh of entry.staticMeshes)mesh.visible=true;
+        this.batchBuildings();
+      }else{
+        model.traverse(node=>{if(node.isMesh){node.castShadow=false;node.receiveShadow=true;}});
+        this.batchRoads();
+      }
+      this.preview.add(model,marker);
+    }
+    Object.assign(this.moving,{object,point,failed});
+    this.positionMovePreview();
+  }
+  positionMovePreview() {
+    const {object,point,failed,entry,model,marker}=this.moving;
+    const {objects,seed,territory}=this.state;
+    const placed={...object,...point};
+    const foundation=buildingFoundation(placed,seed,territory);
+    const y=foundation?.base??objectHeight(placed,objects,seed,territory);
+    if(entry?.foundation)positionFoundation(entry.foundation,foundation,placed,seed);
+    model.position.set(point.x,y,point.z);
+    model.rotation.y=angleOf(point.rotation);
+    marker.position.set(point.x,y+.13,point.z);
+    marker.rotation.y=model.rotation.y;
+    marker.material=failed?lineInvalid:lineValid;
+    this.renderer.shadowMap.needsUpdate=true;
+  }
+  clearPreview() {
+    this.preview.clear();
+    if(!this.moving)return;
+    const {id,entry,model}=this.moving;
+    this.moving=null;
+    if(entry){
+      const placed=this.state.objects.find(object=>object.id===id);
+      if(placed){
+        model.position.set(placed.x,entry.y,placed.z);
+        model.rotation.y=angleOf(placed.rotation);
+        if(entry.foundation){
+          const {seed,territory}=this.state;
+          positionFoundation(entry.foundation,buildingFoundation(placed,seed,territory),placed,seed);
+        }
+        this.root.add(model);
+      }
+      this.batchBuildings();
+    }else this.batchRoads();
+    this.renderer.shadowMap.needsUpdate=true;
+  }
+  markObject(object,natural=false) {
     const perimeter=isVillageWall(object);
     this.selectedLine.visible=Boolean(object)&&!perimeter;
     this.wallSelection.visible=perimeter;
+    this.selectionCorners=null;
     if(!object)return;
+    if(natural){
+      const {seed,territory}=this.state;
+      const y=terrainHeight(object.x,object.z,seed,territory);
+      const rock=object.type==='rock',width=Math.max(1,(rock?2:2.4)*object.size);
+      this.selectedLine.position.set(object.x,y+.16,object.z);
+      this.selectedLine.scale.set(width,1,width);
+      this.selectedLine.rotation.y=0;
+      this.selectionCorners=[new THREE.Vector3(object.x,y,object.z),
+        new THREE.Vector3(object.x,y+object.size*(rock?.8:6.8),object.z)];
+      return;
+    }
     if(perimeter){
       const points=[];
       const {seed,territory}=this.state;
@@ -230,9 +357,44 @@ export class WorldView {
     this.selectedLine.position.set(object.x,y+.16,object.z);
     this.selectedLine.scale.set(item.w,1,item.d);
     this.selectedLine.rotation.y=angleOf(object.rotation);
+    if(fortificationRole(object))return;
+
+    const entry=this.drawables.get(object.id);
+    const box=entry?.pickBounds ?? (entry?new THREE.Box3().setFromObject(entry.model):new THREE.Box3());
+    if(box.isEmpty()){
+      const plot=footprint(object);
+      box.min.set(object.x-plot.w/2,y,object.z-plot.d/2);
+      box.max.set(object.x+plot.w/2,y+.16,object.z+plot.d/2);
+    }
+    const {min,max}=box;
+    this.selectionCorners=[];
+    for(const x of [min.x,max.x])for(const height of [min.y,max.y])for(const z of [min.z,max.z]){
+      this.selectionCorners.push(new THREE.Vector3(x,height,z));
+    }
+  }
+  projectSelection() {
+    if(!this.selectionCorners)return null;
+    const width=this.host.clientWidth,height=this.host.clientHeight;
+    if(!width||!height)return null;
+
+    this.camera.updateMatrixWorld();
+    let left=Infinity,top=Infinity,right=-Infinity,bottom=-Infinity;
+    for(const corner of this.selectionCorners){
+      selectionPoint.copy(corner).project(this.camera);
+      if(selectionPoint.z<-1||selectionPoint.z>1)continue;
+      const x=(selectionPoint.x+1)*width/2,y=(1-selectionPoint.y)*height/2;
+      left=Math.min(left,x);right=Math.max(right,x);
+      top=Math.min(top,y);bottom=Math.max(bottom,y);
+    }
+    if(right<0||left>width||bottom<0||top>height)return null;
+    return {
+      x:(left+right)/2,y:(top+bottom)/2,top,bottom,
+      radius:Math.hypot(right-left,bottom-top)/2,width,height,
+    };
   }
   drop(entry) {
     entry.model.removeFromParent();
+    if(entry.foundation&&entry.foundation.geometry!==foundationGeometry)entry.foundation.geometry.dispose();
     for(const motion of entry.motion)if(motion.kind==='wave')motion.node.geometry.dispose();
     this.finishConstruction(entry);
   }
@@ -260,8 +422,9 @@ export class WorldView {
     this.state=state;
     const previousTerrain=this.terrain?.key;
     const enclosed=state.objects.some(isVillageWall);
-    if(!this.terrain)this.terrain=new Terrain(this.scene,state.seed,state.territory,enclosed);
-    else this.terrain.update(state.seed,state.territory,enclosed);
+    let terrainChanged=true;
+    if(!this.terrain)this.terrain=new Terrain(this.scene,state.seed,state.territory,enclosed,state.removedLandscape);
+    else terrainChanged=this.terrain.update(state.seed,state.territory,enclosed,state.removedLandscape);
     if(this.terrain.key!==previousTerrain&&this.territoryPreview){
       const {direction,panel}=this.territoryPreview;
       this.showTerritory(direction,panel);
@@ -285,13 +448,15 @@ export class WorldView {
       this.navigation.surfaces=this.traffic.surfaces=this.surfaces;
     }
     const list=new Map(visibleObjects.map(object=>[object.id,object]));
+    const movingObject=list.get(this.moving?.id);
+    if(this.moving&&(!movingObject||(this.moving.entry&&template(movingObject)!==this.moving.entry.source)))this.clearPreview();
     for(const [id,entry] of this.drawables){
       const object=list.get(id);
       if(!object||modelKey(object)!==entry.modelKey||template(object)!==entry.source){
         this.drop(entry);this.drawables.delete(id);
       }
     }
-    const allRoads=new Map();
+    const allRoads=this.roadGroups=new Map();
     const newSet=new Set(created);
     this.atmosphere.fires.length=0;
     for(const object of visibleObjects){
@@ -307,16 +472,22 @@ export class WorldView {
         model.userData.uid=object.span===undefined?object.id:villageWallId;
         this.root.add(model);
         entry={model,source:template(object),modelKey:modelKey(object),staticMeshes:staticMeshes(model),motion:tracks(model,object.x*.29+object.z*.37+object.id.length),birth:!this.reduced&&newSet.has(object.id)?this.clock??0:null};
+        if(hasFoundation(object))entry.foundation=addFoundation(model);
         this.drawables.set(object.id,entry);
         animateModel(entry.motion,this.clock||0,0,object.open,this.reduced,true);
       }
-      const y=objectHeight(object,state.objects,state.seed,state.territory);
+      const foundation=buildingFoundation(object,state.seed,state.territory);
+      const y=foundation?.base??objectHeight(object,state.objects,state.seed,state.territory);
       if(entry.stage)entry.stage.top+=y-entry.y;
       entry.model.position.set(object.x,y,object.z);
       entry.model.rotation.y=angleOf(object.rotation);
       if(object.span!==undefined)entry.model.scale.x=object.span/catalogue[object.type].w;
       entry.y=y;entry.open=object.open;
-      const layout=[object.id,entry.modelKey,object.x,y,object.z,object.rotation,object.span].join(',');
+      const layout=[object.id,entry.modelKey,object.x,y,object.z,object.rotation,object.span,foundation?.bottom,foundation?state.seed:''].join(',');
+      if(foundation&&entry.layout!==layout){
+        positionFoundation(entry.foundation,foundation,object,state.seed);
+        entry.foundationVisible=foundation.visible;
+      }
       if(!entry.motion.length&&entry.layout!==layout){
         entry.pickBounds=new THREE.Box3().setFromObject(entry.model);
       }
@@ -324,16 +495,17 @@ export class WorldView {
       if(entry.birth!=null&&!entry.stage)this.beginConstruction(entry);
       this.atmosphere.mark(entry.model);
     }
-    this.batchRoads(allRoads);
+    this.batchRoads();
     this.batchBuildings();
-    if(refreshRoutes)this.traffic.update(state,false,this.reduced,this.terrain.key!==previousTerrain);
+    if(this.moving)this.positionMovePreview();
+    if(refreshRoutes)this.traffic.update(state,false,this.reduced,terrainChanged);
     this.renderer.shadowMap.needsUpdate=true;
   }
   batchBuildings() {
     const regions=new Map();
     this.root.updateMatrixWorld(true);
-    for(const entry of this.drawables.values()){
-      if(entry.birth!=null)continue;
+    for(const [id,entry] of this.drawables){
+      if(entry.birth!=null||id===this.moving?.id)continue;
       const {x,z}=entry.model.position;
       const key=regionKey(x,z);
       if(!regions.has(key))regions.set(key,[]);
@@ -357,22 +529,25 @@ export class WorldView {
       clear(key);
       const container=group(this.root,'Estruturas '+key);
       container.matrixAutoUpdate=false;
-      createStaticBatches(container,entries.flatMap(entry=>entry.staticMeshes));
+      createStaticBatches(container,entries.flatMap(entry=>entry.foundationVisible?[...entry.staticMeshes,entry.foundation]:entry.staticMeshes));
       this.staticBatches.set(key,{container,entries,layout});
     }
   }
-  batchRoads(allRoads) {
+  batchRoads() {
+    const allRoads=this.roadGroups;
     for(const [id,bundle] of this.roadBatches){
       if(!allRoads.has(id)){
         bundle.group.traverse(mesh=>{if(mesh.isInstancedMesh)mesh.dispose();});
         bundle.group.removeFromParent();this.roadBatches.delete(id);
       }
     }
-    for(const [id,roads] of allRoads){
+    for(const [id,grouped] of allRoads){
+      const roads=this.moving&&!this.moving.entry?grouped.filter(road=>road.id!==this.moving.id):grouped;
       const how=roads.map(o=>[o.x,o.z,o.rotation].join(',')).join('|')+'/'+this.terrain.key;
       const saved=this.roadBatches.get(id);
       if(saved?.key===how)continue;
-      if(saved){saved.group.traverse(mesh=>{if(mesh.isInstancedMesh)mesh.dispose();});saved.group.removeFromParent();}
+      if(saved){saved.group.traverse(mesh=>{if(mesh.isInstancedMesh)mesh.dispose();});saved.group.removeFromParent();this.roadBatches.delete(id);}
+      if(!roads.length)continue;
       const container=group(this.root,'vias '+id), model=template(roads[0]);
       container.matrixAutoUpdate=false;
       model.updateMatrixWorld(true);
@@ -401,8 +576,8 @@ export class WorldView {
     const raw=Math.max(.002,(ms-(this.previous||ms))/1000);
     const dt = Math.min(.05,raw), t=ms/1000;
     this.previous=ms;this.clock=t;
+    const movementTime=Math.min(.24,raw);
     if(!this.territoryPreview){
-      const movementTime=Math.min(.24,raw);
       const steps=this.navigation.mode==='walk'?Math.ceil(movementTime/.05):1;
       for(let step=0;step<steps;step++)this.navigation.frame(movementTime/steps,this.state,(...args)=>this.blocked(...args));
     }
@@ -427,7 +602,7 @@ export class WorldView {
     if(!this.reduced)this.terrain.animate(t);
     if(!this.lighting || t-this.lighting>.12){this.atmosphere.update(camera,t,this.reduced);this.lighting=t;}
     else this.atmosphere.sky.position.copy(camera.position);
-    this.traffic.frame(dt,t,this.reduced);
+    this.traffic.frame(movementTime,t,this.reduced);
     this.atmosphere.clouds.visible=!this.territoryPreview;
     this.renderer.render(this.scene,camera);
     const metrics=this.metrics;

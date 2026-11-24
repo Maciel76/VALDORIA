@@ -1,5 +1,6 @@
 """Exercise Valdória through its production build with isolated storage."""
 import os
+from math import hypot
 from pathlib import Path
 import socket
 import subprocess
@@ -85,6 +86,24 @@ def assert_catalogue_centered(page):
     assert abs(box["y"] + box["height"] / 2 - page.viewport_size["height"] / 2) <= 1
 
 
+def assert_radial_selection(page, name, count=4):
+    selection = page.get_by_role("group", name=f"Ações para {name}", exact=True)
+    expect(selection).to_be_visible()
+    buttons = selection.get_by_role("button")
+    expect(buttons).to_have_count(count)
+    ring, *targets = selection.evaluate(
+        "menu => [menu, ...menu.querySelectorAll('button')].map(node => node.getBoundingClientRect().toJSON())"
+    )
+    assert abs(ring["width"] - ring["height"]) <= 1
+    x, y = ring["x"] + ring["width"] / 2, ring["y"] + ring["height"] / 2
+    for box in targets:
+        assert box["x"] >= 0 and box["x"] + box["width"] <= page.viewport_size["width"]
+        assert box["y"] >= 0 and box["y"] + box["height"] <= page.viewport_size["height"]
+        radius = hypot(box["x"] + box["width"] / 2 - x, box["y"] + box["height"] / 2 - y)
+        assert abs(radius - ring["width"] / 2) <= 1
+    return x, y
+
+
 READ_SAVED = """
         slot => new Promise((resolve, reject) => {
           const open = indexedDB.open('reino-valdoria-saves', 1);
@@ -108,6 +127,44 @@ def assert_no_errors(issues):
 
 def offline(browser, address):
     context, page, issues = open_page(browser, address)
+    expect(page.locator("#gold")).to_have_text("1.500")
+    starter = stored(page, "own")
+    assert starter["territory"] == {"lots": []}
+    assert [o["type"] for o in starter["objects"]] == ["stockade", "villageWall", "cityGate"]
+    action(page, "territory", ".dock").click()
+    expect(page.locator("#panel")).to_contain_text("12 × 12 m")
+    picker = page.locator("#expansion-lot")
+    expect(picker).to_have_value("0,2")
+    available = page.locator("#panel").bounding_box()["y"]
+    scale = max(72 / (1060 - 24), 72 / (available - 24))
+    page.mouse.click(530 - 6 / scale, available / 2 + 30 / scale)
+    expect(picker).to_have_value("-1,2")
+    picker.select_option("0,2")
+    action(page, "expand", "#panel").click()
+    expect(page.locator("#gold")).to_have_text("880")
+    page.wait_for_function(f"""async () => {{
+        const realm=await ({READ_SAVED})('own');
+        return realm?.territory.lots.includes('0,2')&&realm.objects.some(object=>object.id==='per-4'&&object.z===36);
+    }}""")
+    page.reload(wait_until="networkidle")
+    page.locator("#app[data-ready=true]").wait_for(timeout=45000)
+    assert stored(page, "own")["territory"]["lots"] == ["0,2"]
+
+    # Exercise saved realms that predate the parcel layout through their normal entry points.
+    legacy = {**starter, "gold": 5000, "territory": dict.fromkeys(("north", "east", "south", "west"), 0),
+              "objects": [starter["objects"][0]]}
+    page.evaluate("""state => new Promise((resolve, reject) => {
+        const open=indexedDB.open('reino-valdoria-saves',1);
+        open.onsuccess=()=>{
+            const db=open.result,tx=db.transaction('kingdoms','readwrite');
+            tx.objectStore('kingdoms').put({state,revision:0},'own');
+            tx.oncomplete=()=>{db.close();resolve();};
+            tx.onerror=()=>reject(tx.error);
+        };
+        open.onerror=()=>reject(open.error);
+    })""", legacy)
+    page.reload(wait_until="networkidle")
+    page.locator("#app[data-ready=true]").wait_for(timeout=45000)
     expect(page.locator("#gold")).to_have_text("5.000")
     saved = stored(page, "own")
     assert not any(obj["type"] in ("villageWall", "cityGate") for obj in saved["objects"])
@@ -213,7 +270,16 @@ def offline(browser, address):
     assert stored(page, "empty")["objects"][0]["rotation"] == 1
 
     page.mouse.click(530, 360)
-    expect(page.locator("#selection h3")).to_have_text("Casebre de palha")
+    x, y = assert_radial_selection(page, "Casebre de palha")
+    assert hypot(x-530, y-360) < 55
+    page.mouse.move(795, 270)
+    page.mouse.down(button="right")
+    page.mouse.move(870, 310, steps=4)
+    page.mouse.up(button="right")
+    page.wait_for_function(
+        "x => Math.abs(parseFloat(document.querySelector('#selection').style.left) - x) > 5", arg=x
+    )
+    action(page, "overview", ".camera-tools").click()
     action(page, "move", "#selection").click()
     expect(page.locator("#placement")).to_be_visible()
     expect(action(page, "confirm", "#placement")).to_have_count(0)
@@ -224,10 +290,18 @@ def offline(browser, address):
     page.mouse.click(530, 360)
     expect(page.locator("#selection")).not_to_be_visible()
     page.mouse.click(650, 360)
-    expect(page.locator("#selection h3")).to_have_text("Casebre de palha")
+    expect(page.get_by_role("group", name="Ações para Casebre de palha")).to_be_visible()
     action(page, "undo", ".dock").click()
-    page.mouse.click(530, 360)
-    expect(page.locator("#selection h3")).to_have_text("Casebre de palha")
+    expect(page.locator("#toast")).to_have_text("Última alteração desfeita.")
+    page.wait_for_function("""() => {
+      const box = document.querySelector('#selection').getBoundingClientRect();
+      return Math.hypot(box.x + box.width/2 - 530, box.y + box.height/2 - 360) < 55;
+    }""")
+    action(page, "delete", "#selection").click()
+    expect(page.locator("#selection")).not_to_be_visible()
+    expect(page.locator("#people")).to_have_text("0")
+    action(page, "undo", ".dock").click()
+    expect(page.locator("#people")).to_have_text("3")
 
     action(page, "undo", ".dock").click()
     expect(page.locator("#gold")).to_have_text("5.000")
@@ -333,6 +407,8 @@ def mobile_layout(browser, address):
     expect(page.locator("#gold")).to_have_text("4.890")
     expect(page.locator("#placement")).not_to_be_visible()
     page.touchscreen.tap(195, 422)
+    x, y = assert_radial_selection(page, "Casebre de palha")
+    assert hypot(x-195, y-422) < 55
     action(page, "move", "#selection").tap()
     page.touchscreen.tap(275, 422)
     expect(page.locator("#toast")).to_have_text("Construção movida.")

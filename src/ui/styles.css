@@ -76,6 +76,8 @@ button { -webkit-tap-highlight-color: transparent; }
 .heading-medallion svg { width: 19px; height: 19px; }
 .pane-heading h2 { font: 650 30px/.93 var(--serif); margin: 0; }
 .pane-heading .tool { width: 29px; height: 29px; margin-left: auto; }
+.pane-heading .clear-entry { margin-left: auto; }
+.pane-heading .clear-entry + .tool { margin-left: 0; flex-shrink: 0; }
 .category-tabs {
   display: grid; grid-template-columns: repeat(10,1fr); gap: 4px; padding: 0 13px 10px;
   border-bottom: 1px solid #a5895b6b;
@@ -176,12 +178,36 @@ button { -webkit-tap-highlight-color: transparent; }
 .outlined:hover,.gate-button:hover { background: #f8eac6; }
 .compact { min-height: 30px; padding: 5px 8px; }
 .compact svg,.outlined svg,.gate-button svg { width: 15px; height: 15px; }
-.selection {
+.selection-panel {
   position: absolute; z-index: 3; bottom: 94px; left: 50%; transform: translateX(-50%); display: flex;
   align-items: center; gap: 13px; padding: 8px 9px 8px 12px; max-width: calc(100vw - 28px); white-space: nowrap;
 }
-.selection small { font-size: 10px; color: var(--muted); }
-.selection h3 { font: 650 22px/.95 var(--serif); margin: 0; }
+.selection-panel small { font-size: 10px; color: var(--muted); }
+.selection-panel h3 { font: 650 22px/.95 var(--serif); margin: 0; }
+.obstacle-selection {
+  position: absolute; top: 0; left: 0; z-index: 4; width: max-content; max-width: calc(100% - 20px);
+  display: grid; gap: 7px; padding: 7px 8px;
+}
+.obstacle-selection-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.obstacle-selection-heading h3 { font: 650 19px/1 var(--serif); margin: 0 0 0 3px; }
+.obstacle-selection-heading .tool { width: 25px; height: 25px; }
+.obstacle-selection-actions { display: flex; flex-wrap: wrap; gap: 5px; }
+.obstacle-selection-actions button { min-height: 36px; }
+.selection {
+  position: absolute; z-index: 3; width: calc(2 * var(--radius)); aspect-ratio: 1;
+  transform: translate(-50%,-50%); border-radius: 50%; pointer-events: none; color: #fae6bd;
+  box-shadow: inset 0 0 0 1px #efe0b5a3,0 0 0 1px #24180e64;
+}
+.selection .tool {
+  position: absolute; left: 50%; top: 50%; width: 44px; height: 44px;
+  transform: translate(-50%,-50%) rotate(var(--angle)) translateY(calc(-1 * var(--radius))) rotate(calc(-1 * var(--angle)));
+  pointer-events: auto; touch-action: manipulation; border-radius: 50%;
+  border-color: #d1ac6d; background: #34271e; box-shadow: 0 2px 7px #24180ea6;
+}
+.selection .tool:hover { background: #5a422d; }
+.selection .tool:focus-visible { outline-color: #f6dfaa; }
+.selection .tool[data-action="delete"] { background: #6c332b; color: #ffe2cd; }
+.selection .tool[data-action="delete"]:hover { background: #92473a; }
 .crosshair { position: absolute; top: 50%; left: 50%; width: 7px; height: 7px; border: 1px solid #fff5d1; border-radius: 50%; background: #392719a1; pointer-events: none; z-index: 1; }
 .touch-walk { display: none; }
 .toast {
@@ -244,6 +270,8 @@ input:not([type=checkbox]),select {
 .territory-panel .option-grid button small { font-size: 10px; }
 .territory-panel .modal-actions { align-items: center; justify-content: space-between; padding: 0 12px 9px; }
 .territory-balance { flex: 1; font-size: 12px; color: #674e35; }
+.lot-picker { display: flex; align-items: center; gap: 8px; padding: 7px 12px; font-size: 12px; }
+.lot-picker select { min-width: 110px; padding: 4px; }
 .atlas { width: min(1100px,calc(100% - 36px)); }
 .atlas-heading { padding: 15px 20px; }
 .atlas-identity { display: flex; align-items: center; gap: 10px; }
@@ -309,7 +337,7 @@ input:not([type=checkbox]),select {
   .map-inset,.help-button span { display: none; }
   .camera-tools,.game-tools { right: 13px; }
   .dock { bottom: 11px; }
-  .placement,.selection { bottom: 80px; }
+  .placement,.selection-panel { bottom: 80px; }
   .atlas-content { grid-template-columns: minmax(0,1fr) 221px; }
 }
 @media (max-width: 570px) {
@@ -324,6 +352,7 @@ input:not([type=checkbox]),select {
   .game-tools .tool { width: 32px; height: 32px; }
   .game-tools .tool svg { width: 16px; }
   .pane-heading { padding: 8px 9px; }
+  .catalogue .pane-heading { gap: 6px; }
   .pane-heading h2 { font-size: 24px; }
   .heading-medallion { width: 28px; height: 28px; }
   .category-tabs { grid-template-columns: repeat(5,1fr); padding: 0 9px 7px; }
@@ -350,9 +379,10 @@ input:not([type=checkbox]),select {
   .placement-tools { gap: 3px; }
   .placement-tools .tool { width: 24px; height: 27px; }
   .placement-tools svg { width: 14px; height: 14px; }
-  .selection { bottom: 72px; flex-wrap: wrap; gap: 6px; width: max-content; }
-  .selection h3 { font-size: 18px; }
-  .selection .gate-button { padding-inline: 4px; font-size: 10px; }
+  .placement-tools .clear-option { padding-inline: 5px; font-size: 9px; }
+  .selection-panel { bottom: 72px; flex-wrap: wrap; gap: 6px; width: max-content; }
+  .selection-panel h3 { font-size: 18px; }
+  .selection-panel .gate-button { padding-inline: 4px; font-size: 10px; }
   .atlas-content { display: block; }
   .atlas-map-wrap { padding: 8px; }
   .atlas-directory { border-left: 0; border-top: 1px solid #c3ac82; padding: 9px; }

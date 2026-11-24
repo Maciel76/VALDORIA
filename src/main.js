@@ -8,7 +8,8 @@ import { drawMinimap } from './ui/atlas-art.js';
 import { loadLandmarks } from './models/library.js';
 import { WorldView } from './world/view.js';
 import { AmbientSound } from './world/audio.js';
-import { BAND,directions,expansionBounds,LIMIT } from './world/terrain-data.js';
+import { BAND,expansionBounds,expansionOptions } from './world/terrain-data.js';
+import { LOT_SIZE,usesLots } from './world/lots.js';
 import { SaveManager,profile,recoverProfile,register,request } from './storage/saves.js';
 import { collectTax, expansionCost, upgradeStarter, validatedKingdom } from './core/kingdom.js';
 import { castleTypes, gates } from './core/geometry.js';
@@ -30,8 +31,9 @@ const active = () => guest?.state || state;
 const modalsOpen = () => popups.some(dialog=>dialog.open);
 const prepareModels = objects => view && loadLandmarks(objects);
 const SLOT_KEY='reino-valdoria-slot';
+const saveKind=key=>key==='demo'?'demo':key==='own'||key==='starter'?'starter':'empty';
 const previousSlot=localStorage.getItem(SLOT_KEY);
-let state, slot=['own','empty','demo','backup'].includes(previousSlot)?previousSlot:'own';
+let state, slot=['own','starter','empty','demo','backup'].includes(previousSlot)?previousSlot:'own';
 let guest=null, locked=false, refreshBusy=false, lastMini=0, lastAim=0;
 let territoryDirection=null;
 
@@ -122,7 +124,7 @@ async function switchSlot(next) {
   if(slot===next){hud.popup.close();return;}
   if(guest)leaveVisit();
   await saves.save(state);
-  const replacement=await saves.load(next,next==='demo'?'demo':next==='own'?'starter':'empty');
+  const replacement=await saves.load(next,saveKind(next));
   if(next==='backup'&&!saves.current){
     await saves.load(slot);
     tell('Ainda não há uma cópia de conflito.');
@@ -227,6 +229,13 @@ async function action(which,value) {
       }
       break;
     case 'cancel': editor.cancel(); break;
+    case 'mark-clearing':
+      if(!guest&&view){
+        if(view.navigation.mode==='walk')cameraMode('orbit');
+        editor.startClearing(value==='obstacle'?editor.selectedObstacle:null);
+      }
+      break;
+    case 'clear-landscape': if(!guest)editor.clearTerrain(); break;
     case 'rotate': if(!guest)editor.rotate(1); break;
     case 'line': editor.setLine(); break;
     case 'repeat': editor.setRepeat(); break;
@@ -272,15 +281,17 @@ async function action(which,value) {
       break;
     case 'territory':
       if(!guest){
+        if(editor.clearing||editor.placement?.move)editor.cancel();
         if(document.pointerLockElement)document.exitPointerLock();
         view?.navigation.keys.clear();
-        territoryDirection=directions.find(direction=>state.territory[direction]<LIMIT)??null;
+        const options=expansionOptions(state.territory);
+        territoryDirection=options.includes('0,2')?'0,2':options[0]??null;
         hud.showTerritory(state,territoryDirection);
         view?.showTerritory(territoryDirection,hud.popup);
       }
       break;
     case 'preview-expansion':
-      if(!guest&&hud.territoryOpen&&value!==territoryDirection){
+      if(!guest&&hud.territoryOpen&&value!==territoryDirection&&expansionOptions(state.territory).includes(value)){
         territoryDirection=value;
         hud.updateTerritory(state,value);
         view?.showTerritory(value,hud.popup);
@@ -294,9 +305,10 @@ async function action(which,value) {
         hud.popup.close();
         cameraMode('orbit');
         view?.showPurchasedExpansion(strip);
-        editor.select(editor.selected?.id);
+        editor.select(editor.selection?.id);
         editor.updatePreview();
-        hud.notify(`Faixa de ${BAND} m liberada por ${cost.toLocaleString('pt-BR')} ouro.`);
+        const area=usesLots(state.territory)?`Lote de ${LOT_SIZE} × ${LOT_SIZE} m liberado`:`Faixa de ${BAND} m liberada`;
+        hud.notify(`${area} por ${cost.toLocaleString('pt-BR')} ouro.`);
       }
       break;
     }
@@ -389,7 +401,7 @@ if(view){
   });
   canvas.addEventListener('pointermove',event=>{
     if(pointerDown?.pointer===event.pointerId&&Math.hypot(pointerDown.x-event.clientX,pointerDown.y-event.clientY)>8)pointerDown=null;
-    if(!editor.placement||event.pointerType==='touch')return;
+    if((!editor.placement&&!editor.clearing)||event.pointerType==='touch')return;
     const now=performance.now();
     if(now-lastAim<40)return;
     lastAim=now;
@@ -399,7 +411,12 @@ if(view){
   canvas.addEventListener('pointerup',event=>{
     const from=pointerDown;pointerDown=null;
     if(!from||event.button!==0||from.pointer!==event.pointerId||Math.hypot(from.x-event.clientX,from.y-event.clientY)>8||guest)return;
-    if(editor.placement){
+    if(hud.territoryOpen&&usesLots(state.territory)){
+      const lot=view.pickExpansion(event);
+      if(lot)action('preview-expansion',lot);
+      return;
+    }
+    if(editor.placement||editor.clearing){
       const point=view.placeAt(event);
       if(point)editor.confirm(point);
       return;
@@ -420,6 +437,7 @@ if(view){
     for(const type of ['pointerup','pointercancel','lostpointercapture'])button.addEventListener(type,()=>view.navigation.keys.delete(key));
   });
   view.onFrame=t=>{
+    if(editor.selection)hud.positionSelection(view.projectSelection());
     if(t-lastMini>.7){
       lastMini=t;
       const camera=view.navigation;
@@ -430,20 +448,25 @@ if(view){
 }
 
 document.addEventListener('keydown',event=>{
+  if(event.key==='Escape'&&hud.territoryOpen&&usesLots(state?.territory)){hud.popup.close();return;}
   if(!state||modalsOpen()||event.target.matches('input,textarea,select')||event.target.isContentEditable)return;
   const key=event.key.toLowerCase();
   if(key==='escape'){editor.cancel();editor.select(null);return;}
+  if((event.ctrlKey||event.metaKey)&&key==='z'&&!guest){event.preventDefault();editor.undo();return;}
+  if(event.ctrlKey||event.metaKey||event.altKey)return;
   if(key==='j'&&view?.navigation.mode==='walk'){view.navigation.lookMode();return;}
-  if(guest)return view?.navigation.keys.add(key);
-  if((event.ctrlKey||event.metaKey)&&key==='z'){event.preventDefault();editor.undo();return;}
-  if(key==='enter'&&editor.placement&&event.target.tagName!=='BUTTON'){event.preventDefault();editor.confirm();return;}
-  if(key==='delete'&&editor.selected){event.preventDefault();editor.remove();return;}
-  if(key==='r'&&!event.repeat){event.preventDefault();editor.rotate(event.shiftKey?-1:1);return;}
-  if(key==='e'&&!event.repeat&&view?.navigation.mode==='walk'){firstGate();return;}
   const arrows={arrowup:[0,-1],arrowdown:[0,1],arrowleft:[-1,0],arrowright:[1,0]};
-  if(arrows[key]&&editor.placement){event.preventDefault();editor.nudge(...arrows[key]);return;}
-  if(arrows[key]&&view?.navigation.mode!=='orbit')event.preventDefault();
-  view?.navigation.keys.add(key);
+  if(!guest){
+    if(key==='enter'&&(editor.placement||editor.clearing?.plot)&&event.target.tagName!=='BUTTON'){event.preventDefault();editor.confirm();return;}
+    if(key==='delete'&&editor.selection){event.preventDefault();editor.remove();return;}
+    if(key==='r'&&!event.repeat){event.preventDefault();editor.rotate(event.shiftKey?-1:1);return;}
+    if(key==='e'&&!event.repeat&&view?.navigation.mode==='walk'){firstGate();return;}
+    if(arrows[key]&&editor.placement){event.preventDefault();editor.nudge(...arrows[key]);return;}
+  }
+  if(view&&(arrows[key]||['w','a','s','d','shift'].includes(key))){
+    if(key!=='shift')event.preventDefault();
+    view.navigation.keys.add(key);
+  }
 });
 document.addEventListener('keyup',event=>view?.navigation.keys.delete(event.key.toLowerCase()));
 window.addEventListener('online',()=>connectProfile().then(ok=>{if(ok && !saves.conflicted&&!guest)saves.save(state);}));
@@ -478,7 +501,7 @@ setInterval(async ()=>{
 },18000);
 
 async function initialize() {
-  const loaded=await saves.load(slot,slot==='demo'?'demo':slot==='own'?'starter':'empty');
+  const loaded=await saves.load(slot,saveKind(slot));
   const initial=slot==='own'?upgradeStarter(loaded):loaded;
   await prepareModels(initial.objects);
   state=initial;

@@ -1,9 +1,9 @@
-import { starterPerimeterRoads } from './perimeter.js';
-import { emptyKingdom, upgradeStarter } from '../core/kingdom.js';
+import { emptyKingdom, starterKingdom } from '../core/kingdom.js';
 import { catalogue } from '../core/catalog.js';
 import { checkPlacement, gates } from '../core/geometry.js';
 
 export function makeKingdom(kind='starter', now=Date.now()) {
+  if(kind==='starter')return starterKingdom(now);
   const state = emptyKingdom(now);
   if (kind==='empty') return state;
   if (kind==='demo') {
@@ -59,13 +59,6 @@ export function makeKingdom(kind='starter', now=Date.now()) {
       .forEach(args=>add(...args));
     line('dirt',40,6,62,6);
     line('gravel',80,6,90,6);
-  }
-  if(kind==='starter'){
-    for(const [index,[x,z]] of starterPerimeterRoads.entries()){
-      const road={type:'cobbles',rotation:0,x,z,id:`per-road-${index}`};
-      if(!checkPlacement(state,road))state.objects.push(road);
-    }
-    upgradeStarter(state);
   }
   return state;
 }

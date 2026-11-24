@@ -1,5 +1,7 @@
 # Modelos de Valdória
 
+Os seis modelos humanos, o cavalo e a carroça com rodas raiadas estão em `moradores-e-carroca.blend`. Os modelos usam pigmentos nos vértices e têm articulações nomeadas para a caminhada, as braçadas e o giro das rodas. O jogo carrega o GLB compacto de `src/assets/moradores-e-carroca.glb`. Para regenerar o arquivo, execute `blender --background --factory-startup --python-exit-code 1 --python models/build_villagers.py`.
+
 Os modelos e a heráldica são originais. Os arquivos editáveis de arquitetura, adereços, vegetação e caracteres ficam em `src/models`. As primitivas descrevem dimensões em metros e usam Y para cima, com a fachada principal orientada para +Z. A igreja e a capela são exportadas para `src/assets` pelo comando `npm run models`. A exportação preserva os nomes dos materiais usados na iluminação.
 
 Portões, grade, ponte levadiça, rodas, pás, chamas, bandeiras e membros são grupos com pivôs próprios. As peças estáticas são agrupadas por material e as partes móveis ficam separadas.

@@ -1,7 +1,14 @@
 import { catalogue } from './catalog.js';
-import { fixedRotation, gridRound, getLineCandidate, linePositions, gates, containsPoint } from './geometry.js';
+import { fixedRotation, gridRound, getLineCandidate, linePositions, gates, containsPoint, footprint,
+  landscapeBlocked, landscapeObstacles } from './geometry.js';
 import { edit } from './kingdom.js';
 import { isFixedFortification,isVillageGate } from './fortifications.js';
+import { bounds,insideTerritory } from '../world/terrain-data.js';
+
+function clearingBounds(first,second){
+  return {minX:Math.min(first.x,second.x),maxX:Math.max(first.x,second.x)+1,
+    minZ:Math.min(first.z,second.z),maxZ:Math.max(first.z,second.z)+1};
+}
 
 export class Editor {
   constructor(view,hud,onChange) { this.view=view;this.hud=hud;this.onChange=onChange;this.history=[]; }
@@ -16,11 +23,66 @@ export class Editor {
   }
   select(id) {
     this.selected=this.state.objects.find(object=>object.id===id) || null;
-    this.view?.markObject(this.selected);
-    this.hud.showSelection(this.selected);
+    this.selectedObstacle=this.selected?null:this.view?.terrain?.obstacleAt(id)??null;
+    this.view?.markObject(this.selection,Boolean(this.selectedObstacle));
+    this.hud.showSelection(this.selection,Boolean(this.selectedObstacle));
+    if(this.selection)this.hud.positionSelection(this.view?.projectSelection());
+  }
+  get selection() { return this.selected??this.selectedObstacle; }
+  startClearing(first=null) {
+    if(!this.view?.terrain)return;
+    this.cancel();
+    this.select(null);
+    this.clearing={first:null,point:null,plot:null};
+    this.hud.toggleCatalogue(false);
+    if(first)this.markClearing(first);
+    else this.hud.showClearing(this.clearing);
+    this.view.canvas.focus({preventScroll:true});
+  }
+  clearingPoint(point) {
+    const edge=bounds(this.state.territory);
+    const snap=(value,min,max)=>Math.max(min,Math.min(max-1,Math.floor(value)));
+    return {x:snap(point.x,edge.minX,edge.maxX),z:snap(point.z,edge.minZ,edge.maxZ)};
+  }
+  markClearing(point) {
+    if(!insideTerritory(point.x,point.z,bounds(this.state.territory))){
+      this.hud.notify('Marque os cantos dentro do seu território.');
+      return;
+    }
+    const entry=this.clearing;
+    const next=this.clearingPoint(point);
+    if(!entry.first||entry.plot){
+      entry.first=entry.point=next;
+      entry.plot=null;
+      this.view.terrain.showClearing(clearingBounds(next,next),this.state.territory);
+    }else{
+      const edge=clearingBounds(entry.first,next);
+      entry.plot={x:(edge.minX+edge.maxX)/2,z:(edge.minZ+edge.maxZ)/2,w:edge.maxX-edge.minX,d:edge.maxZ-edge.minZ};
+      this.view.terrain.showClearing(edge,this.state.territory,true);
+    }
+    this.updateClearing();
+  }
+  updateClearing() {
+    const entry=this.clearing;
+    if(!entry)return;
+    const count=entry.plot?[...landscapeObstacles(this.state,entry.plot)].length:0;
+    this.hud.showClearing(entry,count);
+  }
+  clearTerrain() {
+    const area=this.clearing?.plot;
+    const plots=area?[area]:this.detail?.clearPlots;
+    if(!plots?.length)return;
+    const ids=new Set();
+    for(const plot of plots)for(const point of landscapeObstacles(this.state,plot))ids.add(point.id);
+    if(!this.apply({kind:'clear-landscape',ids:[...ids]}))return;
+    if(area)this.cancel();
+    else this.updatePreview();
+    this.view.canvas.focus({preventScroll:true});
+    this.hud.notify('Terreno limpo. Você já pode construir no local.');
   }
   startPlacement(type, object=null) {
     if(!this.view||isFixedFortification(object)||type==='villageWall'||(!object&&!catalogue[type]?.purchasable))return;
+    if(this.clearing)this.cancel();
     this.select(null);
     const point=object ? {x:object.x,z:object.z} : this.player ?
       {x:this.player.x-Math.sin(this.view.navigation.yaw)*8,z:this.player.z-Math.cos(this.view.navigation.yaw)*8} :
@@ -31,8 +93,17 @@ export class Editor {
     this.view.canvas.focus({preventScroll:true});
   }
   aim(point,refresh=false) {
+    if(this.clearing){
+      const entry=this.clearing;
+      if(!point||!entry.first||entry.plot)return;
+      const next=this.clearingPoint(point);
+      if(next.x===entry.point.x&&next.z===entry.point.z)return;
+      entry.point=next;
+      this.view.terrain.showClearing(clearingBounds(entry.first,next),this.state.territory);
+      return;
+    }
     const entry=this.placement;
-    if(!entry||!point)return;
+    if(!entry||!point||(entry.hold&&!refresh))return;
     const {grid}=catalogue[entry.type];
     const next={x:gridRound(point.x,grid),z:gridRound(point.z,grid)};
     if(!refresh&&next.x===entry.point?.x&&next.z===entry.point?.z)return;
@@ -43,6 +114,7 @@ export class Editor {
     const entry=this.placement;
     if(!entry)return;
     const step=catalogue[entry.type].grid;
+    entry.hold=false;
     this.aim({x:entry.point.x+x*step,z:entry.point.z+z*step});
   }
   rotate(sign) {
@@ -66,6 +138,8 @@ export class Editor {
     this.updatePreview();
   }
   cancel() {
+    if(this.clearing)this.view?.terrain?.showClearing(null);
+    this.clearing=null;
     this.placement=null;
     this.detail=null;
     this.view?.clearPreview();
@@ -81,15 +155,33 @@ export class Editor {
     const options={player:this.player,ignore:entry.move?.id};
     const result=getLineCandidate(this.state,item,points,options);
     const reason=result.failures.find(Boolean) || (!entry.move&&this.state.gold<result.total?'Moedas insuficientes.':'');
-    this.detail={points,cost:result.total,reason};
-    this.view?.setPreview(points,entry.move??{type:entry.type},result.failures.map(failed=>failed||(!entry.move&&this.state.gold<result.total)));
+    const clearPlots=result.failures.every(failure=>!failure||failure===landscapeBlocked)
+      ? points.filter((_,i)=>result.failures[i]===landscapeBlocked).map(point=>footprint({...point,type:entry.type})) : [];
+    this.detail={points,cost:result.total,reason,clearPlots};
+    if(entry.move)this.view?.setMovePreview(entry.move,points[0],Boolean(reason));
+    else this.view?.setPreview(points,{type:entry.type},result.failures.map(failed=>failed||this.state.gold<result.total));
     this.hud.showPlacement(entry,this.detail);
   }
   confirm(point) {
-    if(point)this.aim(point,true);
+    if(this.clearing){
+      if(point)this.markClearing(point);
+      else if(this.clearing.plot)this.clearTerrain();
+      return;
+    }
+    if(point&&this.placement){
+      this.placement.hold=false;
+      this.aim(point,true);
+    }
     const entry=this.placement;
     if(!entry||!this.detail)return;
-    if(this.detail.reason){this.hud.notify(this.detail.reason);return;}
+    if(this.detail.reason){
+      if(this.detail.clearPlots.length){
+        entry.hold=true;
+        this.hud.showPlacement(entry,this.detail);
+      }
+      this.hud.notify(this.detail.reason);
+      return;
+    }
     if(entry.line&&!entry.anchor){entry.anchor={...entry.point};this.updatePreview();return;}
     const points=this.detail.points.map(point=>({...point,type:entry.type}));
     const result=this.apply(entry.move ? {kind:'move',id:entry.move.id,...points[0]} : {kind:'place',points});
@@ -99,7 +191,7 @@ export class Editor {
       this.cancel();this.select(id);
       this.hud.notify('Construção movida.');
     } else if(entry.repeat) {
-      entry.anchor=null;this.updatePreview();
+      entry.anchor=null;entry.hold=false;this.updatePreview();
       this.hud.notify(points.length===1?'Construção concluída.':`${points.length} peças construídas.`);
     } else {
       this.cancel();
@@ -121,8 +213,13 @@ export class Editor {
     }
   }
   remove() {
-    if(!this.selected)return;
-    if(this.apply({kind:'remove',id:this.selected.id})){this.select(null);this.hud.notify('Construção excluída.');}
+    const object=this.selection,obstacle=this.selectedObstacle;
+    if(!object)return;
+    const action=obstacle?{kind:'clear-landscape',ids:[obstacle.id]}:{kind:'remove',id:object.id};
+    if(this.apply(action)){
+      this.select(null);
+      this.hud.notify(obstacle?(obstacle.type==='rock'?'Pedra removida.':'Árvore removida.'):'Construção excluída.');
+    }
   }
   toggleGate(id) {
     const object=this.state.objects.find(o=>o.id===id);
@@ -131,7 +228,7 @@ export class Editor {
       this.hud.notify('Afaste-se da passagem antes de fechar o portão.');
       return;
     }
-    if(this.apply({kind:'gate',id})){this.select(this.selected?.id);this.hud.notify(object.open?'Portão fechado.':'Portão aberto.');}
+    if(this.apply({kind:'gate',id})){this.select(this.selection?.id);this.hud.notify(object.open?'Portão fechado.':'Portão aberto.');}
   }
   apply(action) {
     const result=edit(this.state,action,this.player);
@@ -143,16 +240,18 @@ export class Editor {
   }
   undo() {
     if(!this.history.length)return;
-    const change=this.history.pop();
-    if(this.player && change.add.some(object=>containsPoint(object,this.player.x,this.player.z,.43))){
-      this.history.push(change);
+    const change=this.history.at(-1);
+    if(this.player && change.add?.some(object=>containsPoint(object,this.player.x,this.player.z,.43))){
       this.hud.notify('Afaste-se para restaurar a construção.');
       return;
     }
-    edit(this.state,{kind:'undo',change});
-    this.select(this.selected?.id);
+    const result=edit(this.state,{kind:'undo',change},this.player);
+    if(result.error){this.hud.notify(result.error);return;}
+    this.history.pop();
     this.onChange({modified:true});
+    this.select(this.selection?.id);
     this.updatePreview();
+    this.updateClearing();
     this.hud.notify('Última alteração desfeita.');
   }
 }

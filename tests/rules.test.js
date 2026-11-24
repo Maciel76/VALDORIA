@@ -6,18 +6,19 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { catalogue } from '../src/core/catalog.js';
 import { fortificationLevel,isVillageGate,isVillageWall,villageWallId } from '../src/core/fortifications.js';
 import { villageGatePositions,villagePerimeterBounds,villageWallSections,worldObjects } from '../src/world/perimeter.js';
-import { checkPlacement, containsPoint, footprint, linePositions, objectHeight, supportHeight } from '../src/core/geometry.js';
+import { buildingFoundation, checkPlacement, containsPoint, footprint, landscapeObstacles, linePositions, objectHeight, supportHeight } from '../src/core/geometry.js';
 import { collectTax, economy, edit, emptyKingdom, expansionCost, upgradeStarter, validatedKingdom } from '../src/core/kingdom.js';
 import { makeKingdom } from '../src/world/demo.js';
-import { BAND, BASE, bounds, expansionBounds, inWater, landscapeCell, riverX, terrainHeight, visibleTerrainHeight, waterLevel } from '../src/world/terrain-data.js';
+import { BAND, BASE, bounds, expansionBounds, expansionOptions, inWater, landHeight, landscapeCell, riverX, terrainHeight, visibleTerrainHeight, waterLevel } from '../src/world/terrain-data.js';
 import { Terrain } from '../src/world/terrain-render.js';
 import { makeRouteGraph, route } from '../src/world/traffic.js';
-import { blockedAt, CollisionGrid, supportHeightWrapper } from '../src/world/walk.js';
+import { blockedAt, CollisionGrid, supportHeightWrapper, WalkSurfaces } from '../src/world/walk.js';
 import { wireStockade } from '../src/models/stockade.js';
 import { KingdomCamera } from '../src/world/camera.js';
 
 const piece=(type,x,z,rotation=0,id=type,extra={})=>({id,type,x,z,rotation,...extra});
 const stateWith=(...objects)=>({...emptyKingdom(),objects});
+const legacyKingdom=()=>stateWith(piece('stockade',-14,-22,0,'v-0',{open:true,wallLevel:1}),piece('hut',8,10));
 
 test('catálogo tem todas as construções, fortificações, decorações e brasões',()=>{
   const count=group=>Object.values(catalogue).filter(item=>item.category===group).length;
@@ -38,6 +39,112 @@ test('um quarto de volta troca dimensões e mantém colisão na orientação da 
   assert.equal(checkPlacement(emptyKingdom(),piece('peasant',179,0)),'Fora do território.');
   assert.equal(checkPlacement(emptyKingdom(),piece('peasant',0,0),{player:{x:1,z:0}}),'Afaste-se para construir.');
   assert.equal(checkPlacement(emptyKingdom(),piece('peasant',0,0)),'');
+});
+
+test('o alicerce acompanha o relevo do lote inteiro, sustenta a borda e se recalcula após expandir',()=>{
+  const house=piece('peasant',-173,104,1);
+  const state=stateWith(house), {seed,territory}=state;
+  const grade=buildingFoundation(house,seed,territory);
+  assert.equal(grade.visible,true);
+  assert.equal(grade.plot.w,7);
+  assert.equal(grade.plot.d,8);
+  assert.ok(grade.base>terrainHeight(house.x,house.z,seed,territory)+1);
+  assert.equal(objectHeight(house,state.objects,seed,territory),grade.base);
+  for(let dx=-grade.plot.w/2;dx<=grade.plot.w/2;dx+=.25){
+    for(let dz=-grade.plot.d/2;dz<=grade.plot.d/2;dz+=.25){
+      const ground=landHeight(house.x+dx,house.z+dz,seed,territory);
+      assert.ok(grade.top>ground && grade.bottom<ground);
+    }
+  }
+
+  const corners=[-1,1].flatMap(i=>[-1,1].map(j=>{
+    const x=house.x+i*(grade.plot.w/2-.1),z=house.z+j*(grade.plot.d/2-.1);
+    return {x,z,y:landHeight(x,z,seed,territory)};
+  }));
+  const {x,z,y}=corners.sort((a,b)=>a.y-b.y)[0];
+  const index=new CollisionGrid(state.objects),surfaces=new WalkSurfaces(state.objects),terrain={isSolid:()=>false};
+  assert.equal(supportHeightWrapper(x,z,state,Infinity,surfaces),grade.top);
+  assert.equal(blockedAt(state,terrain,index,x,z,.02,y,undefined,surfaces),true);
+  assert.equal(blockedAt(state,terrain,index,x,z,.02,grade.top,undefined,surfaces),false);
+
+  territory.west=1;
+  assert.notEqual(buildingFoundation(house,seed,territory).base,grade.base);
+});
+
+test('remover uma árvore natural libera o lote e a passagem, persiste e permite desfazer',()=>{
+  const state=emptyKingdom();
+  const tree=landscapeCell(-1,-4,state.seed).find(point=>point.id==='-1,-4:8');
+  const hut=piece('hut',-12,-110);
+  const ray=new Raycaster(new Vector3(tree.x,90,tree.z),new Vector3(0,-1,0));
+  const terrain=new Terrain(new Scene(),state.seed,state.territory);
+  const root=terrain.root;
+
+  assert.equal(terrain.pickObstacle(ray,100),tree.id);
+  assert.equal(terrain.isSolid(tree.x,tree.z,0),true);
+  assert.equal(checkPlacement(state,hut),'Há vegetação ou rocha no local.');
+  assert.ok(edit(state,{kind:'clear-landscape',ids:['5,0:0']}).error);
+  const removal=edit(state,{kind:'clear-landscape',ids:[tree.id]});
+  assert.equal(removal.error,undefined);
+  assert.ok(edit(state,{kind:'clear-landscape',ids:[tree.id]}).error);
+  assert.equal(terrain.update(state.seed,state.territory,false,state.removedLandscape),true);
+  assert.equal(terrain.root,root);
+  assert.equal(terrain.pickObstacle(ray,100),null);
+  assert.equal(terrain.isSolid(tree.x,tree.z,0),false);
+
+  const saved=validatedKingdom(JSON.parse(JSON.stringify(state)));
+  assert.deepEqual(saved.removedLandscape,[tree.id]);
+  assert.equal(validatedKingdom({...saved,removedLandscape:[tree.id,tree.id]}),null);
+  assert.deepEqual(validatedKingdom({...saved,removedLandscape:undefined,removedTrees:[tree.id]}).removedLandscape,[tree.id]);
+  assert.deepEqual(validatedKingdom({...saved,removedLandscape:undefined}).removedLandscape,[]);
+  const construction=edit(state,{kind:'place',points:[hut]});
+  assert.equal(construction.error,undefined);
+  edit(state,{kind:'undo',change:construction.undo});
+  assert.ok(edit(state,{kind:'undo',change:removal.undo},tree).error);
+  assert.deepEqual(state.removedLandscape,[tree.id]);
+  assert.equal(edit(state,{kind:'undo',change:removal.undo}).error,undefined);
+  terrain.update(state.seed,state.territory,false,state.removedLandscape);
+  assert.equal(terrain.pickObstacle(ray,100),tree.id);
+  assert.equal(terrain.isSolid(tree.x,tree.z,0),true);
+  assert.equal(checkPlacement(state,hut),'Há vegetação ou rocha no local.');
+});
+
+test('limpar área remove rochas e árvores do lote e restaura apenas a limpeza mais recente',()=>{
+  const state=emptyKingdom();
+  const alreadyRemoved='-1,-4:8';
+  assert.equal(edit(state,{kind:'clear-landscape',ids:[alreadyRemoved]}).error,undefined);
+  const plot={x:-45,z:-93,w:38,d:30};
+  const obstacles=[...landscapeObstacles(state,plot)];
+  const rock=obstacles.find(point=>point.type==='rock');
+  const tree=obstacles.find(point=>point.type!=='rock');
+  assert.ok(rock&&tree);
+  const terrain=new Terrain(new Scene(),state.seed,state.territory,false,state.removedLandscape);
+  terrain.showClearing({minX:-45,maxX:-44,minZ:-93,maxZ:-92},state.territory,true);
+  const marker=terrain.clearing.children.find(node=>node.isMesh);
+  assert.ok(marker.geometry.attributes.position.array.every(Number.isFinite));
+  terrain.showClearing(null);
+  const build=piece('hut',Math.round(rock.x),Math.round(rock.z));
+  assert.equal(checkPlacement(state,build),'Há vegetação ou rocha no local.');
+  assert.equal(terrain.isSolid(rock.x,rock.z,0),true);
+  const rockRay=new Raycaster(new Vector3(rock.x,terrainHeight(rock.x,rock.z,state.seed,state.territory)+rock.size,rock.z),new Vector3(0,-1,0));
+  assert.equal(terrain.pickObstacle(rockRay,rock.size),rock.id);
+  assert.equal(terrain.rockNear(rock.x+.32,rock.z,.55),rock.id);
+  const ids=obstacles.map(point=>point.id);
+  assert.ok(edit(state,{kind:'clear-landscape',ids:[...ids,'5,0:0']}).error);
+  assert.deepEqual(state.removedLandscape,[alreadyRemoved]);
+  const clearing=edit(state,{kind:'clear-landscape',ids});
+  assert.equal(clearing.error,undefined);
+  terrain.update(state.seed,state.territory,false,state.removedLandscape);
+  assert.equal(terrain.isSolid(rock.x,rock.z,0),false);
+  assert.equal(terrain.obstacleAt(tree.id),undefined);
+  assert.equal(terrain.pickObstacle(rockRay,rock.size),null);
+  assert.equal(checkPlacement(state,build),'');
+  assert.equal(state.gold,5000);
+  assert.deepEqual(validatedKingdom(state).removedLandscape,[alreadyRemoved,...ids]);
+  edit(state,{kind:'undo',change:clearing.undo});
+  terrain.update(state.seed,state.territory,false,state.removedLandscape);
+  assert.deepEqual(state.removedLandscape,[alreadyRemoved]);
+  assert.equal(terrain.isSolid(rock.x,rock.z,0),true);
+  assert.equal(checkPlacement(state,build),'Há vegetação ou rocha no local.');
 });
 
 test('muralhas encostam na grade modular e uma linha desfaz a cobrança inteira',()=>{
@@ -161,7 +268,7 @@ test('grafo conecta vias e corta rotas ao fechar ou remover a passagem',()=>{
 });
 
 test('a loja instala um perímetro no território já ampliado, cobra uma vez e permite desfazer',()=>{
-  const state=makeKingdom('starter',1);
+  const state=legacyKingdom();
   assert.equal(state.objects.some(isVillageWall),false);
   state.starterPerimeter=true;
   upgradeStarter(state);
@@ -194,7 +301,7 @@ test('a loja instala um perímetro no território já ampliado, cobra uma vez e 
 });
 
 test('uma muralha cerca todo o território, com quatro esquinas e três acessos',()=>{
-  const state=makeKingdom('starter',1);
+  const state=legacyKingdom();
   assert.equal(edit(state,{kind:'buy-village-wall'}).error,undefined);
   const entrances=state.objects.filter(isVillageGate);
   assert.equal(state.objects.filter(isVillageWall).length,1);
@@ -221,7 +328,7 @@ test('uma muralha cerca todo o território, com quatro esquinas e três acessos'
 });
 
 test('migração une as peças antigas, conserva construções e recupera o nível e estado de cada portão',()=>{
-  const starter=makeKingdom('starter',1);
+  const starter=legacyKingdom();
   const regular=starter.objects.filter(object=>!isVillageWall(object)&&!isVillageGate(object));
   const saved={
     ...starter,gold:2538,
@@ -243,7 +350,7 @@ test('migração une as peças antigas, conserva construções e recupera o nív
 });
 
 test('muralha inteira, portões e castelo têm melhorias independentes e reversíveis',()=>{
-  const state=makeKingdom('starter',1);
+  const state=legacyKingdom();
   assert.equal(edit(state,{kind:'buy-village-wall'}).error,undefined);
   const gate=state.objects.find(isVillageGate);
   edit(state,{kind:'gate',id:gate.id});
@@ -282,7 +389,7 @@ test('muralha inteira, portões e castelo têm melhorias independentes e revers�
 });
 
 test('expandir ou desfazer reposiciona a muralha e o portão sem perder as melhorias',()=>{
-  const state=makeKingdom('starter',1);
+  const state=legacyKingdom();
   assert.equal(edit(state,{kind:'buy-village-wall'}).error,undefined);
   edit(state,{kind:'upgrade-walls',id:villageWallId});
   edit(state,{kind:'upgrade-gate',id:'per-5'});
@@ -297,6 +404,37 @@ test('expandir ou desfazer reposiciona a muralha e o portão sem perder as melho
   edit(state,{kind:'undo',change:expansion.undo});
   assert.deepEqual(state,before);
   assert.ok(villageWallSections(state).every(section=>section.x<=176&&section.wallLevel===2));
+});
+
+test('o novo reino começa apenas com castelo e paliçada e avança por lotes vizinhos',()=>{
+  const state=makeKingdom('starter',1);
+  assert.deepEqual(state.objects.map(object=>object.type),['stockade','villageWall','cityGate']);
+  assert.equal(state.gold,1500);
+  assert.deepEqual(bounds(state.territory),{minX:-24,maxX:24,minZ:-24,maxZ:24});
+  assert.ok(expansionOptions(state.territory).every(id=>!['2,2','-3,-3'].includes(id)));
+  assert.deepEqual(expansionBounds(state.territory,'0,2'),{minX:0,maxX:12,minZ:24,maxZ:36});
+  const houses=[-17,-6,6,17].map(x=>piece('hut',x,18));
+  assert.equal(edit(state,{kind:'place',points:houses}).error,undefined);
+  assert.match(checkPlacement(state,piece('hut',20,3)),/até 4 moradias/);
+  assert.ok(edit(state,{kind:'expand',direction:'0,3'}).error);
+  const before=structuredClone(state);
+  const price=expansionCost(state,'0,2');
+  const first=edit(state,{kind:'expand',direction:'0,2'});
+  assert.equal(first.error,undefined);
+  assert.equal(state.gold,before.gold-price);
+  assert.equal(state.objects.find(isVillageGate).z,36);
+  assert.ok(!villageWallSections(state).some(section=>section.z===24&&section.x>0&&section.x<12));
+  assert.ok(villageWallSections(state).some(section=>section.z===24&&section.x<0));
+  assert.equal(checkPlacement(state,piece('hut',6,29)),'');
+  assert.equal(checkPlacement(state,piece('hut',18,29)),'Fora do território.');
+  assert.ok(expansionOptions(state.territory).includes('0,3'));
+  assert.ok(expansionCost(state,'0,3')>price);
+  assert.match(edit(state,{kind:'expand',direction:'0,3'}).error,/insuficientes/);
+  assert.deepEqual(validatedKingdom(JSON.parse(JSON.stringify(state))),state);
+  assert.equal(validatedKingdom({...state,territory:{lots:['0,3']}}),null);
+  assert.ok(edit(state,{kind:'undo',change:first.undo},{x:6,z:30}).error);
+  assert.equal(edit(state,{kind:'undo',change:first.undo}).error,undefined);
+  assert.deepEqual(state,before);
 });
 
 test('cobrança, saldo insuficiente, expansão e arrecadação sobrevivem ao recarregamento',()=>{
@@ -423,6 +561,15 @@ test('a câmera respeita o terreno em órbita, voo e caminhada',t=>{
   navigation.snap([x,height-12,z-30],[x,height-9,z]);
   verify();
   assert.equal(navigation.orbit.screenSpacePanning,false);
+  const target=navigation.orbit.target.clone();
+  navigation.keys.add('w');
+  navigation.frame(.1,state,()=>false);
+  assert.ok(navigation.orbit.target.z<target.z-3);
+  navigation.keys.delete('w');
+  navigation.keys.add('d');
+  navigation.frame(.1,state,()=>false);
+  assert.ok(navigation.orbit.target.x>target.x+3);
+  verify();
   navigation.setMode('free',state);
   navigation.keys.add('w');
   for(let frame=0;frame<10;frame++){
@@ -434,7 +581,9 @@ test('a câmera respeita o terreno em órbita, voo e caminhada',t=>{
   const beforeWalk=camera.position.clone();
   navigation.setMode('walk',state);
   navigation.position.set(x,height-9,z);
+  navigation.keys.add('w');
   navigation.frame(.02,state,()=>false);
+  assert.ok(navigation.position.z<z);
   verify();
   navigation.setMode('free',state);
   assert.ok(camera.position.distanceTo(beforeWalk)<.0001);

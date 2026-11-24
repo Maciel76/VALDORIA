@@ -1,34 +1,37 @@
 import * as THREE from 'three';
 import { catalogue } from '../core/catalog.js';
 import { castleTypes, containsPoint, worldBoxes, angleOf } from '../core/geometry.js';
-import { random } from './terrain-data.js';
-import { CollisionGrid, supportHeightWrapper } from './walk.js';
+import { random, waterLevel } from './terrain-data.js';
+import { CollisionGrid, isOpenWater } from './walk.js';
 import { worldObjects } from './perimeter.js';
 import { group,cube,cyl,ball,beam,optimize,cloneModel } from '../models/kit.js';
 import { cart } from '../models/props.js';
+import { createCitizenModel,poseCitizen } from '../models/citizens.js';
+import { findSwimmingCourse,horseSurface,swimmingDepth,trafficHeight,wagonSurface,wheelContacts } from './traffic-terrain.js';
 
 export function makeRouteGraph(state, blocked) {
   if(!blocked){
     const collision=new CollisionGrid(worldObjects(state));
-    blocked=(x,z)=>collision.get(x,z).some(object=>containsPoint(object,x,z,.34));
+    blocked=(x,z)=>isOpenWater(state,x,z,undefined,.31)||collision.get(x,z).some(object=>containsPoint(object,x,z,.34));
   }
   const nodes=new Map();
   const edges=new Map();
   const cell=(x,z)=>Math.floor(x/2)+','+Math.floor(z/2);
   const key=(x,z)=>Math.round(x*4)+':'+Math.round(z*4);
-  const add=(x,z,patrol=false)=>{
+  const add=(x,z,patrol=false,road=false)=>{
     if(blocked(x,z))return;
     const id=key(x,z);
-    nodes.set(id,{id,x,z,patrol:patrol||nodes.get(id)?.patrol||false});
+    const previous=nodes.get(id);
+    nodes.set(id,{id,x,z,patrol:patrol||previous?.patrol||false,road:road||previous?.road||false});
   };
   const terminals = [];
   for(const object of state.objects) {
     const item=catalogue[object.type];
     if(item.category==='roads'){
-      add(object.x,object.z);
+      add(object.x,object.z,false,true);
       if(item.id==='bridge')for(let m=-8;m<=8;m+=2) {
         const a=angleOf(object.rotation);
-        add(object.x+Math.sin(a)*m,object.z+Math.cos(a)*m);
+        add(object.x+Math.sin(a)*m,object.z+Math.cos(a)*m,false,true);
       }
     } else if(item.jobs || item.homes){
       const entry=worldBoxes(object,[{x:0,z:item.d*.5+.53,w:1,d:1}])[0];
@@ -99,7 +102,7 @@ export function makeRouteGraph(state, blocked) {
   }
   return {nodes,edges,validLine};
 }
-export function route(graph,start,finish) {
+export function route(graph,start,finish,canUse=()=>true) {
   if(!start || !finish || !graph.nodes.has(start) || !graph.nodes.has(finish))return [];
   const visited=new Map([[start,null]]), list=[start];
   for(let i=0;i<list.length;i++){
@@ -109,7 +112,7 @@ export function route(graph,start,finish) {
       return path.reverse();
     }
     for(const next of graph.edges.get(list[i])){
-      if(!visited.has(next)){visited.set(next,list[i]);list.push(next);}
+      if(!visited.has(next)&&canUse(graph.nodes.get(next))){visited.set(next,list[i]);list.push(next);}
     }
   }
   return [];
@@ -177,6 +180,8 @@ function animal(type) {
 
 const models=new Map();
 function character(type) {
+  const detailed=createCitizenModel(type);
+  if(detailed)return detailed;
   if(!models.has(type)){
     const created=['hen','sheep','horse','wagon'].includes(type)?animal(type==='wagon'?'horse':type):human(type);
     if(type==='wagon')cart(created.p,0,-2.9,.87,true);
@@ -196,17 +201,27 @@ function character(type) {
   return {p,limbs,wheels};
 }
 
+const citizenTypes=['farmer','merchant','guard','wagon','hen','sheep','horse','rider'];
+const speeds={wagon:1.62,horse:1.88,rider:1.76,hen:.66,sheep:.83,swimmer:1.22};
+const rippleGeometry=new THREE.RingGeometry(.87,1,28).rotateX(-Math.PI/2);
+const rippleMaterial=new THREE.MeshBasicMaterial({color:'#b8d8cc',transparent:true,opacity:.35,depthWrite:false});
+const angleDelta=(from,to)=>Math.atan2(Math.sin(to-from),Math.cos(to-from));
+const blend=THREE.MathUtils.lerp;
+
 export class Traffic {
-  constructor(scene,isBlocked) { this.root=group(scene,'moradores');this.isBlocked=isBlocked;this.people=[];this.remotes=new Map();this.elapsed=0; }
+  constructor(scene,isBlocked) { this.root=group(scene,'moradores');this.isBlocked=isBlocked;this.people=[];this.remotes=new Map(); }
   update(state,paused,reduced,terrainChanged) {
     const continuing=this.state===state;
     this.state=state;
     const {seed,objects}=state;
-    this.graph=makeRouteGraph(state,(x,z)=>this.isBlocked(x,z,.31,undefined,objects));
+    this.graph=makeRouteGraph(state,(x,z)=>this.isBlocked(x,z,.31));
     this.nodes=[...this.graph.nodes.values()].filter(n=>this.graph.edges.get(n.id).length>0);
-    this.doors=this.nodes.filter(node=>node.door); 
+    this.roads=this.nodes.filter(node=>node.road);
+    this.doors=this.nodes.filter(node=>node.door);
     this.patrol=this.nodes.filter(node=>node.patrol);
     this.rng=random(seed+1974+state.objects.length);
+    const previousCourse=this.swimCourse;
+    this.swimCourse=findSwimmingCourse(state,this.surfaces,this.roads,this.isBlocked);
     if(!continuing || paused || !this.nodes.length){
       this.people.forEach(person=>person.p.removeFromParent());
       this.people=[];
@@ -214,45 +229,122 @@ export class Traffic {
     if(paused || !this.nodes.length)return;
     const houses=objects.filter(o=>catalogue[o.type].homes).length;
     const count=houses?Math.min(state.quality==='low'?8:18,Math.max(6,houses*2+4)):0;
-    const kinds=['farmer','merchant','guard','wagon','hen','sheep','horse','rider'];
     for(const person of this.people.splice(count))person.p.removeFromParent();
-    for(const person of this.people){
-      const before=person.p.position;
-      if(terrainChanged)before.y=supportHeightWrapper(before.x,before.z,state,undefined,this.surfaces);
-      if(this.graph.nodes.has(person.current.id) && person.path.every(node=>this.graph.nodes.has(node.id)) &&
-        person.path.every((node,i)=>this.graph.edges.get(i?person.path[i-1].id:person.current.id)?.includes(node.id)))continue;
-      const nearest=this.nodes.filter(node=>Math.hypot(node.x-before.x,node.z-before.z)<8)
-        .sort((a,b)=>Math.hypot(a.x-before.x,a.z-before.z)-Math.hypot(b.x-before.x,b.z-before.z));
-      const accessible=nearest.find(node=>this.graph.validLine({x:before.x,z:before.z},node));
-      person.current=accessible||nearest[0]||this.nodes[0];person.path=accessible?[accessible]:[];
-      if(!accessible)before.set(person.current.x,supportHeightWrapper(person.current.x,person.current.z,state,undefined,this.surfaces),person.current.z);
-      person.wait=.9+this.rng()*.8;
-    }
-    for(let i=this.people.length;i<count;i++){
-      const type=kinds[i%kinds.length], person=character(type);
-      const spawn=this.nodes[Math.floor(this.rng()*this.nodes.length)];
-      const offset=(this.rng()-.5)*.54;
-      person.p.position.set(spawn.x+offset,supportHeightWrapper(spawn.x,spawn.z,state,undefined,this.surfaces),spawn.z-offset);
-      person.p.rotation.y=this.rng()*Math.PI*2;person.p.visible=true;
-      const speed={wagon:1.6,horse:1.9,rider:1.72,hen:.66,sheep:.83}[type]||1.17;
-      const entry={...person,type,speed,current:spawn,offset,path:[],phase:i*.58,wait:.05+i*.22,inside:false,walking:false};
-      this.root.add(person.p);
-      this.people.push(entry);
+    for(let i=0;i<count;i++){
+      const type=this.swimCourse&&i===count-1?'swimmer':citizenTypes[i%citizenTypes.length];
+      let person=this.people[i];
+      if(person?.type===type){
+        if(type==='swimmer'){
+          if(!terrainChanged&&previousCourse?.start.id===this.swimCourse.start.id&&
+            previousCourse?.path[2].z===this.swimCourse.path[2].z)continue;
+        }else{
+          const before=person.p.position;
+          if(terrainChanged)before.y=trafficHeight(state,this.surfaces,before.x,before.z);
+          if(this.graph.nodes.has(person.current.id) && person.path.every((node,index)=>
+              this.graph.edges.get(index?person.path[index-1].id:person.current.id)?.includes(node.id)))continue;
+          if(type!=='wagon'){
+            const nearby=this.nodes.filter(node=>Math.hypot(node.x-before.x,node.z-before.z)<8)
+              .sort((a,b)=>Math.hypot(a.x-before.x,a.z-before.z)-Math.hypot(b.x-before.x,b.z-before.z));
+            const accessible=nearby.find(node=>this.graph.validLine(before,node));
+            if(accessible){person.current=accessible;person.path=[accessible];person.wait=.7;continue;}
+          }
+        }
+      }
+      person?.p.removeFromParent();
+      this.people[i]=this.spawn(type,i);
     }
   }
+  canTravel(type,x,z,heading) {
+    if(type==='swimmer')return !this.isBlocked(x,z,.23,undefined,true);
+    if(this.isBlocked(x,z,type==='wagon'?.36:.19))return false;
+    return type!=='wagon'||wheelContacts(x,z,heading).every(point=>!this.isBlocked(point.x,point.z,.13));
+  }
+  spawn(type,index) {
+    let spawn=type==='swimmer'?this.swimCourse.start:null, heading=this.rng()*Math.PI*2;
+    let firstStop;
+    if(type==='wagon'){
+      const start=Math.floor(this.rng()*this.roads.length);
+      for(let i=0;i<this.roads.length;i++){
+        const road=this.roads[(start+i)%this.roads.length];
+        const next=this.graph.edges.get(road.id).map(id=>this.graph.nodes.get(id)).find(node=>{
+          if(!node.road)return false;
+          const yaw=Math.atan2(node.x-road.x,node.z-road.z);
+          return this.canTravel(type,road.x,road.z,yaw)&&this.canTravel(type,node.x,node.z,yaw);
+        });
+        if(next){spawn=road;firstStop=next;heading=Math.atan2(next.x-road.x,next.z-road.z);break;}
+      }
+      if(!spawn||!this.canTravel(type,spawn.x,spawn.z,heading))type='horse';
+    }
+    if(type!=='swimmer'&&type!=='wagon')spawn=this.nodes[Math.floor(this.rng()*this.nodes.length)];
+    const model=character(type);
+    model.p.name=type;
+    const offset=['swimmer','wagon'].includes(type)?0:(this.rng()-.5)*.36;
+    const x=spawn.x+offset,z=spawn.z-offset;
+    model.p.position.set(x,trafficHeight(this.state,this.surfaces,x,z),z);
+    model.p.rotation.y=heading;
+    const person={...model,type,speed:speeds[type]||1.17,current:spawn,offset,path:firstStop?[firstStop]:[],phase:index*.16,
+      effort:0,swim:0,wait:type==='swimmer'?.7:.05+index*.18,inside:false,walking:false};
+    if(type==='swimmer'){
+      person.wake=new THREE.Mesh(rippleGeometry,rippleMaterial);
+      person.wake.visible=false;person.p.add(person.wake);
+    }
+    this.animate(person,0,0,0,false);
+    this.root.add(person.p);
+    return person;
+  }
   plan(person) {
-    const group=person.type==='merchant' || person.type==='farmer' ? this.doors : this.nodes;
+    if(person.type==='swimmer'){
+      const course=this.swimCourse;
+      if(course)person.path=[...course.path];
+      return;
+    }
+    const wagon=person.type==='wagon';
+    const group=wagon?this.roads:person.type==='merchant'||person.type==='farmer'?this.doors:this.nodes;
     const choices=person.type==='guard'&&this.patrol.length&&this.rng()<.69?this.patrol:group.length?group:this.nodes;
-    for(let i=0;i<7;i++){
+    for(let i=0;i<10;i++){
       const target=choices[Math.floor(this.rng()*choices.length)];
-      const path=route(this.graph,person.current.id,target?.id);
-      if(path.length>2){person.path=path.slice(1);return;}
+      const path=route(this.graph,person.current.id,target?.id,node=>!wagon||node.road);
+      if(path.length<=2)continue;
+      if(wagon&&i<8){
+        const yaw=Math.atan2(path[1].x-path[0].x,path[1].z-path[0].z);
+        if(Math.abs(angleDelta(person.p.rotation.y,yaw))>1.7)continue;
+      }
+      person.path=path.slice(1);return;
     }
     person.wait=1.6;
   }
+  animate(person,dt,t,distance,reduced) {
+    const root=person.p;
+    const water=person.type==='swimmer'?swimmingDepth(this.state,this.surfaces,root.position.x,root.position.z):0;
+    const swim=THREE.MathUtils.smoothstep(water,.22,.78);
+    person.swim=blend(person.swim,swim,Math.min(1,dt*6));
+    if(person.type==='swimmer'){
+      root.position.y=blend(trafficHeight(this.state,this.surfaces,root.position.x,root.position.z),waterLevel-.26,person.swim);
+      person.wake.visible=person.swim>.62&&!reduced;
+      person.wake.position.set(0,waterLevel+.022-root.position.y,-.56);
+      const ripple=.43+(t*.6)%1*.67;
+      person.wake.scale.set(ripple,1,ripple*1.32);
+    }
+    person.effort=blend(person.effort,distance>0?1:0,Math.min(1,dt*11));
+    person.phase+=person.swim>.35?Math.max(dt*.62,distance/1.20):distance/(person.horse?1.46:1.04);
+    if(person.wagon){
+      const {y,pitch,roll}=wagonSurface(this.state,this.surfaces,root.position.x,root.position.z,root.rotation.y);
+      person.wagon.position.y=y-root.position.y;
+      person.wagon.rotation.x=pitch;
+      person.wagon.rotation.z=roll;
+    }
+    if(person.actor){
+      const slope=person.horse?horseSurface(this.state,this.surfaces,root.position.x,root.position.z,root.rotation.y):undefined;
+      poseCitizen(person,{phase:person.phase,effort:person.effort,t,swim:person.swim,distance,slope,reduced});
+      return;
+    }
+    const swing=reduced?0:Math.sin(person.phase*Math.PI*2)*.61*person.effort;
+    for(const limb of person.limbs)limb.node.rotation.x=swing*limb.sign*limb.scale;
+    if(!reduced)for(const wheel of person.wheels)wheel.rotation.x+=distance*1.6;
+  }
   frame(dt,t,reduced) {
-    this.elapsed+=dt;
     for(const person of this.people){
+      let traveled=0;
       person.walking=false;
       if(person.wait>0){
         person.wait-=dt;
@@ -265,19 +357,24 @@ export class Traffic {
           const dx=px-person.p.position.x,dz=pz-person.p.position.z, distance=Math.hypot(dx,dz);
           if(distance<.12){
             person.current=person.path.shift();
-            if(!person.path.length && person.current.door && ['farmer','merchant'].includes(person.type)){
+            if(!person.path.length&&person.type==='swimmer')person.wait=2.4;
+            else if(!person.path.length && person.current.door && ['farmer','merchant'].includes(person.type)){
               person.wait=1.7+this.rng()*2;
               person.inside=true;person.p.visible=false;
             }
           } else {
-            const step=Math.min(person.speed*dt,distance);
+            const heading=Math.atan2(dx,dz), turn=angleDelta(person.p.rotation.y,heading);
+            const nextHeading=person.p.rotation.y+Math.max(-dt*3.4,Math.min(dt*3.4,turn));
+            const pace=person.speed*(1-person.swim*.21);
+            const step=Math.abs(turn)>1.1?0:Math.min(pace*dt,distance);
             const x=person.p.position.x+(dx/distance)*step,z=person.p.position.z+(dz/distance)*step;
             const crowd=this.people.some(other=>other!==person && other.walking &&
               Math.hypot(other.p.position.x-x,other.p.position.z-z)<.43);
-            if(!crowd && !this.isBlocked(x,z,.17)){
-              person.p.rotation.y=Math.atan2(dx,dz);
-              person.p.position.set(x,supportHeightWrapper(x,z,this.state,undefined,this.surfaces),z);
-              person.walking=true;
+            if(!crowd && this.canTravel(person.type,x,z,nextHeading)){
+              person.p.rotation.y=nextHeading;
+              person.p.position.set(x,trafficHeight(this.state,this.surfaces,x,z),z);
+              traveled=step;
+              person.walking=step>0;
               person.blocked=0;
             } else {
               person.blocked=(person.blocked||0)+dt;
@@ -286,15 +383,17 @@ export class Traffic {
           }
         }
       }
-      const swing=!reduced&&person.walking?Math.sin(t*8+person.phase)*.65:0;
-      for(const limb of person.limbs)limb.node.rotation.x=swing*limb.sign*limb.scale;
-      if(!reduced&&person.walking)for(const wheel of person.wheels)wheel.rotation.x+=dt*person.speed*1.12;
+      this.animate(person,dt,t,traveled,reduced);
     }
     for(const { model, target } of this.remotes.values()){
-      const walking=model.p.position.distanceToSquared(target.position)>.035;
+      const beforeX=model.p.position.x,beforeZ=model.p.position.z;
       model.p.position.lerp(target.position,Math.min(1,dt*5));
-      model.p.rotation.y=target.angle;
-      for(const limb of model.limbs)limb.node.rotation.x=walking&&!reduced?Math.sin(t*8)*.56*limb.sign*limb.scale:0;
+      model.p.rotation.y+=angleDelta(model.p.rotation.y,target.angle)*Math.min(1,dt*8);
+      const speed=Math.hypot(model.p.position.x-beforeX,model.p.position.z-beforeZ);
+      if(model.actor){
+        model.phase=(model.phase||0)+Math.min(speed,dt*2.5)/1.04;
+        poseCitizen(model,{phase:model.phase,effort:Math.min(1,speed/Math.max(.001,dt*1.10)),t,reduced});
+      }else for(const limb of model.limbs)limb.node.rotation.x=speed>.003&&!reduced?Math.sin(t*8)*.56*limb.sign*limb.scale:0;
     }
   }
   showPlayers(players) {

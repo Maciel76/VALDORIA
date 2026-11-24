@@ -55,7 +55,8 @@ export class SaveManager {
     let saved;
     try { saved = await access('readonly',store=>store.get(slot)); }
     catch { this.status('Falha ao abrir IndexedDB.'); }
-    this.current = validatedKingdom(saved?.state) ? saved : null;
+    const valid=validatedKingdom(saved?.state);
+    this.current = valid ? {...saved,state:valid} : null;
     const account=profile();
     if (account && this.current?.profileId===account.id) {
       this.revision = this.current.revision || 0;
@@ -93,7 +94,7 @@ export class SaveManager {
           }
         } catch { /* Preserve the two versions for the owner to choose. */ }
       }
-      if (!this.current) { await this.useRemote(remote); return remote.state; }
+      if (!this.current) return this.useRemote(remote);
       this.conflicted = true;
       this.status('Conflito de versões');
       return remote;

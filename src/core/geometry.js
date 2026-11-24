@@ -1,7 +1,8 @@
 import { catalogue } from './catalog.js';
 import { isPerimeterPiece,isVillageWall } from './fortifications.js';
 import { onVillagePerimeter,worldObjects } from '../world/perimeter.js';
-import { BAND, bounds, inWater, ownedLandscapeCell, terrainHeight, waterLevel } from '../world/terrain-data.js';
+import { BAND, bounds, directions, inWater, landHeight, landHeightRange, ownedLandscapeCell, ownsRectangle,terrainHeight, waterLevel } from '../world/terrain-data.js';
+import { usesLots } from '../world/lots.js';
 
 const halfTurn = Math.PI / 2;
 export const angleOf = rotation => rotation * halfTurn;
@@ -91,11 +92,39 @@ export const footprint = object => {
   const item = catalogue[object.type];
   return worldBoxes(object,[box(0,0,object.span??item.w,item.d)])[0];
 };
+export function ownsPlot(territory,{x,z,w,d}){
+  return ownsRectangle(territory,{minX:x-w/2,maxX:x+w/2,minZ:z-d/2,maxZ:z+d/2});
+}
+export const INITIAL_HOME_LIMIT=4;
+export const residentialCount=objects=>objects.filter(object=>catalogue[object.type].homes>0).length;
 const overlaps = (a,b) => Math.abs(a.x-b.x) < (a.w+b.w)/2-.016 && Math.abs(a.z-b.z) < (a.d+b.d)/2-.016;
 export const collidersOverlap = (first,second) => first.some(a=>second.some(b=>overlaps(a,b)));
 const inside = (rect,x,z,r=0) => Math.abs(rect.x-x) < rect.w/2+r && Math.abs(rect.z-z) < rect.d/2+r;
 
+const foundationCategories = new Set(['housing','trade','civic','castle']);
+const foundationCache = new WeakMap();
+export const hasFoundation = object => foundationCategories.has(catalogue[object.type].category);
+
+export function buildingFoundation(object,seed,territory) {
+  if (!hasFoundation(object)) return null;
+  const {type,x,z,rotation}=object;
+  const land=territory?directions.map(key=>territory[key]).join(','):'';
+  const cached=foundationCache.get(object);
+  if(cached&&cached.seed===seed&&cached.land===land&&cached.type===type&&cached.x===x&&cached.z===z&&cached.rotation===rotation){
+    return cached.foundation;
+  }
+  const item=catalogue[type];
+  const w=item.w*(type==='watermill'?.72:type==='windmill'?.6:1);
+  const d=item.d*(type==='watermill'?.82:type==='windmill'?.6:1);
+  const [plot]=worldBoxes(object,[box(0,0,w,d)]);
+  const {low,high}=landHeightRange(plot,seed,territory);
+  const foundation={w,d,plot,base:high+.04,top:high+.025,bottom:low-.12,visible:high-low>.10};
+  foundationCache.set(object,{seed,land,type,x,z,rotation,foundation});
+  return foundation;
+}
+
 function baseHeight(object,seed,territory) {
+  if (hasFoundation(object)) return buildingFoundation(object,seed,territory).base;
   if (object.type !== 'bridge') return terrainHeight(object.x,object.z,seed,territory) + .04;
   const end = angleOf(object.rotation);
   const x = Math.sin(end)*8, z = Math.cos(end)*8;
@@ -103,7 +132,7 @@ function baseHeight(object,seed,territory) {
 }
 
 export function supportHeight(x,z,objects,seed,exclude,maxY=Infinity,forPlacement=false,territory) {
-  let height = terrainHeight(x,z,seed,territory);
+  let height = landHeight(x,z,seed,territory);
   for (const object of objects) {
     if (object.id === exclude) continue;
     const item = catalogue[object.type];
@@ -124,29 +153,35 @@ export function supportHeight(x,z,objects,seed,exclude,maxY=Infinity,forPlacemen
       const localZ = (x-object.x)*Math.sin(turn)+(z-object.z)*Math.cos(turn);
       surface = baseHeight(object,seed,territory) + Math.max(0, Math.min(4.1,(3.5-localZ)*.59));
     } else if (object.type === 'stockade') {
+      const base=baseHeight(object,seed,territory);
       const [ramp,lookout,court,lodge] = worldBoxes(object,[box(7.4,.64,1.79,9.92),box(7.4,-6.9,5.15,5.15),
         box(0,0,32.9,31.63),box(-6.5,-3.9,9.9,7.4)]);
       const localZ=(x-object.x)*Math.sin(angleOf(object.rotation))+(z-object.z)*Math.cos(angleOf(object.rotation));
-      if (inside(ramp,x,z)) surface=baseHeight(object,seed,territory)+.21+Math.min(5.79,Math.max(0,5.6-localZ)*.584);
-      else if (!forPlacement && inside(lookout,x,z) && maxY>=baseHeight(object,seed,territory)+5.99) surface=baseHeight(object,seed,territory)+6;
-      else if (inside(lodge,x,z)) surface=baseHeight(object,seed,territory)+.30;
-      else if (inside(court,x,z)) surface=baseHeight(object,seed,territory)+.20;
+      if (inside(ramp,x,z)) surface=base+.21+Math.min(5.79,Math.max(0,5.6-localZ)*.584);
+      else if (!forPlacement && inside(lookout,x,z) && maxY>=base+5.99) surface=base+6;
+      else if (inside(lodge,x,z)) surface=base+.30;
+      else if (inside(court,x,z)) surface=base+.20;
     } else if (object.type === 'keep') {
+      const base=baseHeight(object,seed,territory);
       const ramp = worldBoxes(object,[box(-11,-1,1.8,8)])[0];
       if (inside(ramp,x,z)) {
         const turn = angleOf(object.rotation);
         const localZ = (x-object.x)*Math.sin(turn)+(z-object.z)*Math.cos(turn);
-        surface = baseHeight(object,seed,territory) + Math.max(.10, Math.min(4.7,(3-localZ)*.5875));
+        surface = base + Math.max(.10, Math.min(4.7,(3-localZ)*.5875));
       } else if (inside(footprint(object),x,z)) {
         const ramparts = worldBoxes(object,[box(-14.4,-.5,2.2,26),box(14.4,-.5,2.2,26),box(0,-14,26,2.3),box(-12.2,-5,3.1,1.6)]);
-        if (!forPlacement && ramparts.some(rect=>inside(rect,x,z)) && maxY > baseHeight(object,seed,territory)+4.5) {
-          surface = baseHeight(object,seed,territory)+4.7;
+        if (!forPlacement && ramparts.some(rect=>inside(rect,x,z)) && maxY > base+4.5) {
+          surface = base+4.7;
         } else {
-          surface = baseHeight(object,seed,territory)+.10;
+          surface = base+.10;
         }
       }
     } else if (straightWalls.has(object.type) && !isPerimeterPiece(object) && !forPlacement && inside(footprint(object),x,z)) {
       surface = baseHeight(object,seed,territory)+4.05;
+    }
+    if((surface===undefined||surface>maxY)&&hasFoundation(object)){
+      const foundation=buildingFoundation(object,seed,territory);
+      if(foundation.visible&&inside(foundation.plot,x,z))surface=foundation.top;
     }
     if (surface !== undefined && surface <= maxY && (surface > height || castleTypes.has(object.type) && !inWater(x,z,seed))) height = surface;
   }
@@ -159,9 +194,11 @@ export function objectHeight(object,objects,seed,territory) {
   return Math.max(baseHeight(object,seed,territory),supportHeight(object.x,object.z,objects,seed,object.id,Infinity,true,territory));
 }
 
-export function containsPoint(object,x,z,radius=.24,y=-Infinity,seed=0,territory) {
+export function containsPoint(object,x,z,radius=.24,y=-Infinity,seed=0,territory,foundationObject=object) {
+  const foundation=y>-Infinity?buildingFoundation(foundationObject,seed,territory):null;
+  if(foundation?.visible&&foundation.top>y+.79&&inside(foundation.plot,x,z,radius))return true;
   const base = y > -Infinity && (castleTypes.has(object.type) || straightWalls.has(object.type))
-    ? baseHeight(object,seed,territory) : Infinity;
+    ? foundation?.base??baseHeight(object,seed,territory) : Infinity;
   if(object.type==='stockade' && y>base+5.03){
     const rails=worldBoxes(object,[box(4.825,-6.9,.24,5.15),box(9.975,-6.9,.24,5.15),box(7.4,-9.475,5.15,.24),
       box(5.66,-4.325,1.65,.23),box(9.14,-4.325,1.65,.23),box(6.50,.64,.11,9.92),box(8.3,.64,.11,9.92)]);
@@ -176,17 +213,37 @@ export function containsPoint(object,x,z,radius=.24,y=-Infinity,seed=0,territory
   return walkBoxes.some(rect => inside(rect,x,z,radius));
 }
 
+export const landscapeBlocked = 'Há vegetação ou rocha no local.';
+
+export function* landscapeObstacles(state,claim) {
+  if(usesLots(state.territory))return;
+  const limit=bounds(state.territory);
+  const enclosed=state.objects.some(isVillageWall);
+  for (let cz=Math.floor((claim.z-claim.d/2-2)/BAND);cz<=Math.floor((claim.z+claim.d/2+2)/BAND);cz++) {
+    for (let cx=Math.floor((claim.x-claim.w/2-2)/BAND);cx<=Math.floor((claim.x+claim.w/2+2)/BAND);cx++) {
+      for (const point of ownedLandscapeCell(cx,cz,state.seed,limit)) {
+        if (inside(claim,point.x,point.z,point.collider) && !state.removedLandscape?.includes(point.id) &&
+            !(enclosed&&onVillagePerimeter(point.x,point.z,state.territory,point.collider+2.4))) yield point;
+      }
+    }
+  }
+}
+
 export function checkPlacement(state, candidate, {ignore,player, staged=[]}={}) {
-  const item = catalogue[candidate.type], claim = footprint(candidate), limit = bounds(state.territory);
-  if (claim.x-claim.w/2 < limit.minX || claim.x+claim.w/2 > limit.maxX ||
-      claim.z-claim.d/2 < limit.minZ || claim.z+claim.d/2 > limit.maxZ) return 'Fora do território.';
+  const item = catalogue[candidate.type], claim = footprint(candidate);
+  if(!ownsPlot(state.territory,claim))return 'Fora do território.';
+  if(item.homes&&usesLots(state.territory)&&!state.territory.lots.length&&
+      residentialCount([...state.objects.filter(object=>object.id!==ignore),...staged])>=INITIAL_HOME_LIMIT){
+    return 'O território inicial comporta até 4 moradias. Compre um lote para construir mais.';
+  }
   const allowedWater = ['bridge','watermill','walkway'].includes(item.id);
   if (!allowedWater && [-.45,0,.45].some(dx=>[-.45,0,.45].some(dz=>inWater(claim.x+claim.w*dx,claim.z+claim.d*dz,state.seed)))) {
     return 'Use uma ponte ou passarela sobre a água.';
   }
   const solid = gates.has(candidate.type) ? {...candidate,open:true} : candidate;
   const nextBoxes = worldBoxes(solid);
-  if (player && (containsPoint(candidate,player.x,player.z,.47) || (!item.support && !castleTypes.has(item.id) && inside(claim,player.x,player.z,.35)))) {
+  if (player && (containsPoint(candidate,player.x,player.z,.47,player.y,state.seed,state.territory) ||
+      (!item.support && !castleTypes.has(item.id) && inside(claim,player.x,player.z,.35)))) {
     return 'Afaste-se para construir.';
   }
 
@@ -215,14 +272,7 @@ export function checkPlacement(state, candidate, {ignore,player, staged=[]}={}) 
     if (occupied || floorCovered || gardenConflict || tooNearBedEdge) return 'A área está ocupada.';
   }
 
-  const enclosed=state.objects.some(isVillageWall);
-  for (let cz=Math.floor((claim.z-claim.d/2-2)/BAND);cz<=Math.floor((claim.z+claim.d/2+2)/BAND);cz++) {
-    for (let cx=Math.floor((claim.x-claim.w/2-2)/BAND);cx<=Math.floor((claim.x+claim.w/2+2)/BAND);cx++) {
-      if (ownedLandscapeCell(cx,cz,state.seed,limit).some(p=>inside(claim,p.x,p.z,p.collider) &&
-        !(enclosed&&onVillagePerimeter(p.x,p.z,state.territory,p.collider+2.4)))) return 'Há vegetação ou rocha no local.';
-    }
-  }
-  return '';
+  return landscapeObstacles(state,claim).next().done ? '' : landscapeBlocked;
 }
 
 export function linePositions(item, from, to, rotation) {
