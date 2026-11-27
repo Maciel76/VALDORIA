@@ -1,9 +1,12 @@
 import * as THREE from 'three';
-import { catalogue } from '../core/catalog.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { catalogue,terrainPaving } from '../core/catalog.js';
+import { sluiceBottom,sluiceLeafHeight } from '../core/water-structures.js';
 import { fortificationRole,isVillageWall,villageWallId } from '../core/fortifications.js';
-import { villageWallSections,worldObjects } from './perimeter.js';
-import { angleOf, buildingFoundation, footprint, hasFoundation, objectHeight } from '../core/geometry.js';
-import { BAND,bounds,expansionBounds,terrainHeight,inWater,waterLevel } from './terrain-data.js';
+import { buildingLevel } from '../core/building-levels.js';
+import { lakeGateId,villageWallSections,worldObjects } from './perimeter.js';
+import { angleOf, buildingFoundation, footprint, gradedLandHeight, hasFoundation, objectHeight, plotDimensions } from '../core/geometry.js';
+import { BAND,bounds,expansionBounds,landHeight,terrainHeight,inWater,waterLevel } from './terrain-data.js';
 import { availableLots,lotAt,LOT_SIZE,usesLots } from './lots.js';
 import { Terrain,turf,turfColorAt } from './terrain-render.js';
 import { Atmosphere } from './atmosphere.js';
@@ -11,11 +14,12 @@ import { KingdomCamera } from './camera.js';
 import { blockedAt,CollisionGrid,WalkSurfaces } from './walk.js';
 import { Traffic } from './traffic.js';
 import { createStaticBatches,staticMeshes } from './static-batches.js';
-import { makeModel,modelKey,sealFor,template } from '../models/library.js';
+import { drapePaving,makeFoundationSlope,sidewalkStepMaterial,steppedSidewalkGeometry } from './foundation-slope.js';
+import { fortificationWallHeight,makeModel,modelKey,sealFor,template } from '../models/library.js';
 import { animateModel,tracks } from '../models/animation.js';
 import { group } from '../models/kit.js';
 
-const stoneTypes=new Set(['dirt','cobbles','gravel','paving','walkway']);
+const stoneTypes=new Set([...terrainPaving,'walkway']);
 const regionKey=(x,z)=>Math.floor((x+24)/48)+','+Math.floor((z+24)/48);
 const valid=new THREE.Color('#81cc9b'), invalid=new THREE.Color('#d56156');
 const worldPointer=new THREE.Vector2();
@@ -30,6 +34,7 @@ const foundationColor=new THREE.Color();
 const lineValid=new THREE.LineBasicMaterial({color:'#a6ec9a',transparent:true,opacity:.92,depthTest:false});
 const lineInvalid=lineValid.clone();lineInvalid.color.set('#f37a63');
 const lineSelect=lineValid.clone();lineSelect.color.set('#e8bc66');
+const pavingTransform=({x,z,rotation})=>new THREE.Matrix4().makeRotationY(angleOf(rotation)).setPosition(x,.04,z);
 
 function addFoundation(model,material=turf) {
   const mesh=new THREE.Mesh(foundationGeometry,material);
@@ -117,6 +122,13 @@ export class WorldView {
     this.camera.updateProjectionMatrix();
     this.navigation.resize();
   }
+  focusCastle(object){
+    const entry=this.drawables.get(object.id);
+    if(!entry){this.navigation.focusCastle(object.x,object.z);return;}
+    const peak=new THREE.Box3().setFromObject(entry.model).max.y;
+    this.navigation.focusCastle(object.x,object.z,entry.y,peak-entry.y,
+      object.type==='stockade'&&buildingLevel(object)===10?object.rotation:null);
+  }
   showTerritory(direction,panel) {
     clearTimeout(this.expansionTimer);
     this.territoryPreview=panel?{direction,panel}:null;
@@ -183,6 +195,8 @@ export class WorldView {
     return blockedAt(this.state,this.terrain,this.collision,x,z,radius,y,walking?object=>{
       const entry=this.drawables.get(object.id);
       if(!entry) return object.open;
+      const sluice=entry.motion.find(node=>node.gate==='sluice-wing');
+      if(sluice)return object.open&&Math.abs(sluice.node.rotation.y-sluice.rotation.y)>=Math.PI/2;
       const bridge=entry.motion.find(node=>node.gate==='bridge');
       const leaf=entry.motion.find(node=>node.gate==='leaf');
       return bridge?Math.abs(bridge.node.rotation.x)<.32:leaf?Math.abs(leaf.node.rotation.y)>1.11:object.open;
@@ -200,7 +214,13 @@ export class WorldView {
     let height=Infinity,travel=0;
     for(let i=0;i<200;i++,travel+=Math.max(.72,travel*.036)){
       ray.at(travel,sample);
-      const ground=inWater(sample.x,sample.z,seed)?waterLevel:terrainHeight(sample.x,sample.z,seed,territory);
+      const nearby=this.surfaces?.get(sample.x,sample.z)??[];
+      let ground=inWater(sample.x,sample.z,seed)?waterLevel:terrainHeight(sample.x,sample.z,seed,territory);
+      if(nearby.some(object=>object.landscaped)){
+        const natural=landHeight(sample.x,sample.z,seed,territory);
+        const graded=gradedLandHeight(sample.x,sample.z,nearby,seed,territory,natural);
+        if(graded>natural+.001)ground=graded;
+      }
       if(sample.y<=ground){
         const fraction=Number.isFinite(height)?height/(height+ground-sample.y):1;
         return ray.at(Math.max(0,travel-Math.max(.72,(travel-.72)*.035)*(1-fraction)),pos).clone();
@@ -209,24 +229,24 @@ export class WorldView {
     }
     return null;
   }
-  pick(event) {
+  pick(event,ground=this.placeAt(event),{foundationsOnly=false}={}) {
     if(!this.state)return null;
-    const ground=this.placeAt(event);
     const models=[];
     for(const entry of this.drawables.values()){
+      if(foundationsOnly&&!entry.foundation)continue;
       if(!entry.pickBounds||this.ray.ray.intersectsBox(entry.pickBounds))models.push(entry.model);
     }
     const hit=this.ray.intersectObjects(models,true)
       .find(({object})=>object.isMesh&&object.name!=='fumaça');
     const groundDistance=ground?this.ray.ray.origin.distanceTo(ground):Infinity;
-    const obstacle=this.terrain.pickObstacle(this.ray,Math.min(hit?.distance??Infinity,groundDistance+.4));
+    const obstacle=foundationsOnly?null:this.terrain.pickObstacle(this.ray,Math.min(hit?.distance??Infinity,groundDistance+.4));
     if(obstacle)return obstacle;
     if(hit){
       let model=hit.object;
       while(model.parent && !model.userData.uid)model=model.parent;
       if(model.userData.uid)return model.userData.uid;
     }
-    if(!ground)return null;
+    if(!ground||foundationsOnly)return null;
     const road=this.state.objects.findLast(o=>{
       if(!stoneTypes.has(o.type))return false;
       const rect=footprint(o);
@@ -235,6 +255,20 @@ export class WorldView {
     if(road)return road.id;
     const radius=Math.min(1.25,groundDistance*Math.tan(THREE.MathUtils.degToRad(this.camera.fov/2))*10/this.host.clientHeight);
     return this.terrain.rockNear(ground.x,ground.z,radius);
+  }
+  showSlopePreview(object,failed) {
+    this.disposeSlopePreview();
+    if(!object||object.landscaped)return;
+    const foundation=buildingFoundation(object,this.state.seed,this.state.territory);
+    if(!foundation?.visible)return;
+    this.slopePreview=makeFoundationSlope(foundation,this.state,failed?badGhost:ghostMaterial);
+    this.preview.add(this.slopePreview);
+  }
+  disposeSlopePreview() {
+    if(!this.slopePreview)return;
+    this.slopePreview.removeFromParent();
+    this.slopePreview.geometry.dispose();
+    this.slopePreview=null;
   }
   setPreview(points,object,failed) {
     this.clearPreview();
@@ -250,6 +284,10 @@ export class WorldView {
       const item=catalogue[type];mark.scale.set(item.w,1,item.d);mark.position.set(point.x,y+.12,point.z);
       mark.rotation.y=angleOf(point.rotation);mark.renderOrder=3;this.preview.add(mark);
       if(reuse && i!==0 && i!==points.length-1)continue;
+      if(terrainPaving.has(type)){
+        this.previewPaving(object,source,failed[i]?badGhost:ghostMaterial);
+        continue;
+      }
       const ghost=source.clone(true);
       ghost.traverse(object=>{
         if(object.isMesh){object.material=failed[i]?badGhost:ghostMaterial;object.castShadow=object.receiveShadow=false;}
@@ -260,16 +298,41 @@ export class WorldView {
       this.preview.add(ghost);
     }
   }
+  previewPaving(object,source,material) {
+    const slopes=this.surfaces.get(object.x,object.z).filter(candidate=>candidate.landscaped);
+    const add=geometry=>{
+      const mesh=new THREE.Mesh(geometry,material);
+      mesh.userData.fittedPaving=true;
+      this.preview.add(mesh);
+    };
+    if(catalogue[object.type].treads){
+      add(steppedSidewalkGeometry(object,slopes,this.state));
+      return;
+    }
+    const transform=pavingTransform(object), matrix=new THREE.Matrix4();
+    source.updateMatrixWorld(true);
+    source.traverse(node=>{
+      if(!node.isMesh)return;
+      add(drapePaving(node.geometry,matrix.multiplyMatrices(transform,node.matrixWorld),slopes,this.state));
+    });
+  }
+  disposePavingPreview() {
+    for(const node of this.preview.children.filter(child=>child.userData.fittedPaving)){
+      node.removeFromParent();
+      node.geometry.dispose();
+    }
+  }
   setMovePreview(object,point,failed) {
     if(this.moving?.id!==object.id){
       this.clearPreview();
       const entry=this.drawables.get(object.id);
       const model=entry?.model??makeModel(object);
       const marker=new THREE.Line(edgeGeometry,lineValid);
-      const {w,d}=catalogue[object.type];
+      const {w,d}=plotDimensions(object);
       marker.scale.set(w,1,d);marker.renderOrder=3;
       this.moving={id:object.id,entry,model,marker};
       if(entry){
+        if(entry.slope)entry.slope.visible=false;
         this.finishConstruction(entry);
         entry.birth=null;
         for(const mesh of entry.staticMeshes)mesh.visible=true;
@@ -278,6 +341,7 @@ export class WorldView {
         model.traverse(node=>{if(node.isMesh){node.castShadow=false;node.receiveShadow=true;}});
         this.batchRoads();
       }
+      if(terrainPaving.has(object.type))model.visible=false;
       this.preview.add(model,marker);
     }
     Object.assign(this.moving,{object,point,failed});
@@ -290,6 +354,11 @@ export class WorldView {
     const foundation=buildingFoundation(placed,seed,territory);
     const y=foundation?.base??objectHeight(placed,objects,seed,territory);
     if(entry?.foundation)positionFoundation(entry.foundation,foundation,placed,seed);
+    if(placed.landscaped)this.showSlopePreview({...placed,landscaped:false},failed);
+    if(terrainPaving.has(placed.type)){
+      this.disposePavingPreview();
+      this.previewPaving(placed,template(placed),failed?badGhost:ghostMaterial);
+    }
     model.position.set(point.x,y,point.z);
     model.rotation.y=angleOf(point.rotation);
     marker.position.set(point.x,y+.13,point.z);
@@ -298,11 +367,14 @@ export class WorldView {
     this.renderer.shadowMap.needsUpdate=true;
   }
   clearPreview() {
+    this.disposeSlopePreview();
+    this.disposePavingPreview();
     this.preview.clear();
     if(!this.moving)return;
     const {id,entry,model}=this.moving;
     this.moving=null;
     if(entry){
+      if(entry.slope)entry.slope.visible=true;
       const placed=this.state.objects.find(object=>object.id===id);
       if(placed){
         model.position.set(placed.x,entry.y,placed.z);
@@ -351,13 +423,13 @@ export class WorldView {
       return;
     }
 
-    const item=catalogue[object.type];
+    const {w,d}=plotDimensions(object);
     const {seed,territory,objects}=this.state;
     const y=objectHeight(object,objects,seed,territory);
     this.selectedLine.position.set(object.x,y+.16,object.z);
-    this.selectedLine.scale.set(item.w,1,item.d);
+    this.selectedLine.scale.set(w,1,d);
     this.selectedLine.rotation.y=angleOf(object.rotation);
-    if(fortificationRole(object))return;
+    if(fortificationRole(object)||object.type==='waterGate')return;
 
     const entry=this.drawables.get(object.id);
     const box=entry?.pickBounds ?? (entry?new THREE.Box3().setFromObject(entry.model):new THREE.Box3());
@@ -394,8 +466,12 @@ export class WorldView {
   }
   drop(entry) {
     entry.model.removeFromParent();
+    if(entry.slope){entry.slope.removeFromParent();entry.slope.geometry.dispose();}
     if(entry.foundation&&entry.foundation.geometry!==foundationGeometry)entry.foundation.geometry.dispose();
-    for(const motion of entry.motion)if(motion.kind==='wave')motion.node.geometry.dispose();
+    for(const {kind,node} of entry.motion){
+      if(kind==='wave')node.geometry.dispose();
+      if(kind==='cascade')node.dispose();
+    }
     this.finishConstruction(entry);
   }
   beginConstruction(entry) {
@@ -441,10 +517,12 @@ export class WorldView {
       this.resize();
     }
     const visibleObjects=worldObjects(state);
-    if(this.indexedObjects!==state.objects||this.terrain.key!==previousTerrain){
+    this.terrain.setLakeFlow(visibleObjects.find(object=>object.id===lakeGateId)?.open??true);
+    if(this.indexedObjects!==state.objects||this.indexedWaterGates!==state.closedWaterGates||this.terrain.key!==previousTerrain){
       this.indexedObjects=state.objects;
+      this.indexedWaterGates=state.closedWaterGates;
       this.collision=new CollisionGrid(visibleObjects);
-      this.surfaces=new WalkSurfaces(state.objects);
+      this.surfaces=new WalkSurfaces(state.objects,state.seed,state.territory);
       this.navigation.surfaces=this.traffic.surfaces=this.surfaces;
     }
     const list=new Map(visibleObjects.map(object=>[object.id,object]));
@@ -469,7 +547,7 @@ export class WorldView {
       if(!entry){
         const model=makeModel(object);
         if(object.type==='keep')sealFor(model);
-        model.userData.uid=object.span===undefined?object.id:villageWallId;
+        model.userData.uid=object.span===undefined||object.type==='waterGate'?object.id:villageWallId;
         this.root.add(model);
         entry={model,source:template(object),modelKey:modelKey(object),staticMeshes:staticMeshes(model),motion:tracks(model,object.x*.29+object.z*.37+object.id.length),birth:!this.reduced&&newSet.has(object.id)?this.clock??0:null};
         if(hasFoundation(object))entry.foundation=addFoundation(model);
@@ -482,8 +560,24 @@ export class WorldView {
       entry.model.position.set(object.x,y,object.z);
       entry.model.rotation.y=angleOf(object.rotation);
       if(object.span!==undefined)entry.model.scale.x=object.span/catalogue[object.type].w;
+      if(object.type==='waterGate'){
+        const top=(object.wallBase??y)+fortificationWallHeight(object.wallLevel);
+        const scale=Math.max(.2,(top-y-sluiceBottom)/sluiceLeafHeight);
+        for(const wing of entry.motion){
+          if(wing.gate!=='sluice-wing')continue;
+          wing.node.scale.y=scale;
+          wing.node.position.y=wing.origin.y+sluiceBottom*(1-scale);
+        }
+      }
       entry.y=y;entry.open=object.open;
       const layout=[object.id,entry.modelKey,object.x,y,object.z,object.rotation,object.span,foundation?.bottom,foundation?state.seed:''].join(',');
+      const slopeLayout=object.landscaped&&foundation?.visible?layout+'/'+this.terrain.key:null;
+      if(entry.slopeLayout!==slopeLayout){
+        if(entry.slope){entry.slope.removeFromParent();entry.slope.geometry.dispose();}
+        entry.slope=slopeLayout?makeFoundationSlope(foundation,state):null;
+        entry.slopeLayout=slopeLayout;
+        if(entry.slope){entry.slope.visible=object.id!==this.moving?.id;this.root.add(entry.slope);}
+      }
       if(foundation&&entry.layout!==layout){
         positionFoundation(entry.foundation,foundation,object,state.seed);
         entry.foundationVisible=foundation.visible;
@@ -535,28 +629,58 @@ export class WorldView {
   }
   batchRoads() {
     const allRoads=this.roadGroups;
+    const dispose=bundle=>{
+      bundle.group.traverse(mesh=>{
+        if(mesh.isInstancedMesh)mesh.dispose();
+        else if(mesh.isMesh)mesh.geometry.dispose();
+      });
+      bundle.group.removeFromParent();
+    };
     for(const [id,bundle] of this.roadBatches){
       if(!allRoads.has(id)){
-        bundle.group.traverse(mesh=>{if(mesh.isInstancedMesh)mesh.dispose();});
-        bundle.group.removeFromParent();this.roadBatches.delete(id);
+        dispose(bundle);this.roadBatches.delete(id);
       }
     }
     for(const [id,grouped] of allRoads){
       const roads=this.moving&&!this.moving.entry?grouped.filter(road=>road.id!==this.moving.id):grouped;
-      const how=roads.map(o=>[o.x,o.z,o.rotation].join(',')).join('|')+'/'+this.terrain.key;
+      const draped=terrainPaving.has(grouped[0].type);
+      const slopes=roads.map(o=>draped?this.surfaces.get(o.x,o.z).filter(object=>object.landscaped):[]);
+      const how=roads.map((o,i)=>[o.x,o.z,o.rotation,...slopes[i].map(s=>[s.id,s.x,s.z,s.rotation].join(','))].join(','))
+        .join('|')+'/'+this.terrain.key;
       const saved=this.roadBatches.get(id);
       if(saved?.key===how)continue;
-      if(saved){saved.group.traverse(mesh=>{if(mesh.isInstancedMesh)mesh.dispose();});saved.group.removeFromParent();this.roadBatches.delete(id);}
+      if(saved){dispose(saved);this.roadBatches.delete(id);}
       if(!roads.length)continue;
-      const container=group(this.root,'vias '+id), model=template(roads[0]);
+      const container=group(this.root,'vias '+id);
       container.matrixAutoUpdate=false;
+      if(catalogue[roads[0].type].treads){
+        const tiles=roads.map((object,i)=>steppedSidewalkGeometry(object,slopes[i],this.state));
+        const geometry=mergeGeometries(tiles,false);
+        for(const tile of tiles)tile.dispose();
+        const mesh=new THREE.Mesh(geometry,sidewalkStepMaterial);
+        mesh.castShadow=mesh.receiveShadow=true;
+        container.add(mesh);
+        this.roadBatches.set(id,{group:container,key:how});
+        continue;
+      }
+      const model=template(roads[0]);
       model.updateMatrixWorld(true);
-      const transforms=roads.map(o=>new THREE.Matrix4().makeRotationY(angleOf(o.rotation))
+      const transforms=roads.map(o=>draped?pavingTransform(o):new THREE.Matrix4().makeRotationY(angleOf(o.rotation))
         .setPosition(o.x,objectHeight(o,this.state.objects,this.state.seed,this.state.territory),o.z));
       const transform=new THREE.Matrix4();
       model.traverse(node=>{
         if(!node.isMesh)return;
-        const mesh=new THREE.InstancedMesh(node.geometry,node.material,roads.length);
+        if(draped){
+          const tiles=transforms.map((road,i)=>
+            drapePaving(node.geometry,transform.multiplyMatrices(road,node.matrixWorld),slopes[i],this.state));
+          const geometry=mergeGeometries(tiles,false);
+          for(const tile of tiles)tile.dispose();
+          const mesh=new THREE.Mesh(geometry,node.material);
+          mesh.receiveShadow=true;
+          container.add(mesh);
+          return;
+        }
+        const mesh=new THREE.InstancedMesh(node.geometry,node.material,transforms.length);
         transforms.forEach((road,i)=>mesh.setMatrixAt(i,transform.multiplyMatrices(road,node.matrixWorld)));
         mesh.matrixAutoUpdate=false;
         mesh.receiveShadow=true;
@@ -590,7 +714,7 @@ export class WorldView {
     let finished=false;
     for(const entry of this.drawables.values()){
       const distance=entry.model.position.distanceToSquared(camera.position);
-      if(distance<32000)animateModel(entry.motion,t,dt,entry.open,this.reduced);
+      if(distance<32000||entry.modelKey==='waterGate')animateModel(entry.motion,t,dt,entry.open,this.reduced);
       if(entry.stage){
         const progress=this.reduced?1:Math.min(1,(t-entry.birth)/.82);
         const reveal=progress<.24?.12*progress/.24:progress<.67?.12+.49*(progress-.24)/.43:.61+.39*(progress-.67)/.33;

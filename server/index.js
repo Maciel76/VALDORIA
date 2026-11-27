@@ -13,7 +13,7 @@ if (!existsSync(resolve(root,'index.html'))) {
   process.exit(1);
 }
 const mime = { '.html':'text/html; charset=utf-8','.js':'text/javascript','.css':'text/css',
-  '.svg':'image/svg+xml','.glb':'model/gltf-binary','.woff2':'font/woff2','.woff':'font/woff','.png':'image/png' };
+  '.svg':'image/svg+xml','.glb':'model/gltf-binary','.woff2':'font/woff2','.woff':'font/woff','.png':'image/png','.webp':'image/webp' };
 const server = createServer(async (req,res)=>{
   try {
     const pathname = decodeURIComponent(new URL(req.url,'http://localhost').pathname);

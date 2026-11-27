@@ -1,3 +1,4 @@
+import { BoxGeometry, DoubleSide, InstancedMesh, Mesh, MeshBasicMaterial, MeshStandardMaterial, PlaneGeometry, PointLight } from 'three';
 import { stockadeWalls } from '../core/geometry.js';
 import { random } from '../world/terrain-data.js';
 import { animated,ball,beam,cloth,cube,cyl,fire,group,materials,roof } from './kit.js';
@@ -6,6 +7,23 @@ import { barrel,crate,light } from './props.js';
 const leaves = [['PortaoEsquerda',-1],['PortaoDireita',1]];
 const banners = [['BandeiraTorre',true],['BandeiraEntrada',false],['BandeiraGuarda',false]];
 const planks=['oak','timberLight','timber','oak'];
+const streamGeometry=new BoxGeometry(1,1,1);
+const streamMaterial=new MeshBasicMaterial({color:'#c2f8f5',transparent:true,opacity:.60,depthWrite:false});
+const pennantMaterial=new MeshStandardMaterial({color:'#a21828',side:DoubleSide,roughness:.84});
+
+function imperialPennant(mast,scale){
+  const geometry=new PlaneGeometry(1,1,16,6);
+  const position=geometry.attributes.position;
+  for(let i=0;i<position.count;i++){
+    const u=position.getX(i)+.5,v=position.getY(i)+.5;
+    const notch=(1-Math.abs(v*2-1))*u**9*.26;
+    position.setXYZ(i,(u*1.63-notch)*scale,(.38+v*.52+u*.14)*scale,0);
+  }
+  const flag=new Mesh(geometry,pennantMaterial);
+  flag.name='Flâmula imperial';
+  flag.userData.wave={horizontal:true};
+  mast.add(flag);
+}
 
 function hearth(root,sculpted) {
   if(sculpted)fire(root,0,.65,3.55,.82);
@@ -71,6 +89,37 @@ export function wireStockade(root,hinge,sculpted=true) {
     fabric.userData.wave={horizontal};
   }
   hearth(root,sculpted);
+}
+
+export function wireAdvancedCastle(root,level) {
+  const leaves=new Map(),masts=[];
+  root.traverse(node=>{
+    if([-1,1].includes(node.userData.castleLeaf))leaves.set(node.userData.castleLeaf,node);
+    if(node.userData.castleFlag)masts.push(node);
+  });
+  if(leaves.size!==2)return false;
+  for(const [sign,node] of leaves)node.userData.motion={kind:'gate',gate:'leaf',sign:-sign};
+  for(const mast of masts){
+    if(mast.userData.flagScale)imperialPennant(mast,mast.userData.flagScale);
+    else cloth(mast,.69,.46,0,'crimson',1.37,1.08);
+  }
+  if(level<9)fire(root,0,.49,3.55,.66);
+  if(level===10){
+    for(const x of [-9.05,9.05]){
+      const flow=new InstancedMesh(streamGeometry,streamMaterial,24);
+      flow.name='Reflexos da cascata';
+      flow.userData.motion={kind:'cascade',seed:x};
+      flow.position.x=x;
+      flow.frustumCulled=false;
+      root.add(flow);
+    }
+    for(const x of [-2.75,2.75]){
+      const lantern=new PointLight('#ffc66a',17,7,2);
+      lantern.position.set(x,2.23,14.36);
+      root.add(lantern);
+    }
+  }
+  return true;
 }
 
 export function stockadeFallback(root) {

@@ -1,3 +1,16 @@
+import { bridges,riverBridgeLength } from './water-structures.js';
+
+const sidewalks = [
+  ['sidewalkDirt','Calçada de terra batida',6,'dirt'],
+  ['sidewalkCobbles','Calçada de pedras',9,'cobbles'],
+  ['sidewalkGravel','Calçada de cascalho',7,'gravel'],
+  ['sidewalkPaving','Calçada de lajes',11,'paving'],
+  ['sidewalkWood','Calçada de madeira',14,'walkway'],
+  ['sidewalkSteps','Calçada com degraus',16,'paving']
+];
+const sidewalkSurfaces=new Map(sidewalks.map(([id,,,surface])=>[id,surface]));
+export const terrainPaving = new Set(['dirt','cobbles','gravel','paving',...sidewalkSurfaces.keys()]);
+
 export const categories = [
   ['housing', 'Moradias', 'house'], ['trade', 'Comércio e produção', 'store'],
   ['civic', 'Edifícios públicos', 'landmark'], ['castle', 'Castelos', 'castle'],
@@ -12,7 +25,7 @@ const byCategory = {
     ['peasant','Casa de camponês',180,8,7,'Uma moradia com chaminé de pedra e telhas de barro.',5],
     ['timber','Casa de enxaimel',285,9,8,'Dois pavimentos com vigas aparentes e beiral pronunciado.',8],
     ['terrace','Casas geminadas',410,14,8,'Duas moradias com entradas independentes.',12],
-    ['noble','Casa nobre de pedra',580,11,10,'Uma residência de pedra com janelas arqueadas.',10],
+    ['noble','Casa nobre de pedra',580,11,10,'Residência de cantaria com janelas arqueadas. Suas melhorias acrescentam galerias, vitrais e jardins.',10],
     ['manor','Solar senhorial',860,17,13,'Residência em alas com jardim e pórtico.',16]
   ],
   trade: [
@@ -20,25 +33,25 @@ const byCategory = {
     ['inn','Hospedaria',390,13,9,'Abrigo com quartos e galeria de madeira.',4,6],
     ['smith','Ferraria',270,9,8,'Forja aberta com bigorna, braseiro e bancada.',0,5],
     ['bakery','Padaria',215,8,7,'Forno de pedra e uma vitrine para o pão do dia.',0,4],
-    ['market','Mercado',290,13,11,'Barracas de tecido reunidas em torno de uma praça.',0,9],
+    ['market','Mercado',290,13,11,'Feira de barracas que se transforma em um grande mercado coberto conforme recebe melhorias.',0,9],
     ['sawmill','Serraria',315,11,9,'Estrutura aberta com serra e pilhas de troncos.',0,6],
-    ['windmill','Moinho de vento',420,9,9,'Torre de moinho com pás movidas pelo vento.',0,5],
-    ['watermill','Moinho d’água',460,11,10,'Moinho com roda lateral que pode ser instalado à margem do rio.',0,6],
+    ['windmill','Moinho de vento',420,9,9,'Moinho de pás giratórias, do posto de madeira à torre imperial com seis pás.',0,5],
+    ['watermill','Moinho d’água',460,11,10,'Moinho de roda lateral para a margem do rio, com melhorias de comportas e aquedutos.',0,6],
     ['barn','Celeiro',235,10,8,'Celeiro com grandes portas de madeira e fardos no interior.',0,4],
-    ['farm','Fazenda com pomar',380,18,15,'Um galpão, horta e fileiras de árvores frutíferas.',0,8]
+    ['farm','Fazenda com pomar',380,18,15,'Uma casa de lavradores com horta e árvores frutíferas. Melhore para ampliar o pomar e instalar irrigação.',4,8]
   ],
   civic: [
-    ['chapel','Capela',420,9,12,'Uma pequena nave de pedra com torre sineira.',0,3],
-    ['church','Igreja de pedra',720,14,19,'Nave com rosácea, contrafortes e torre alta.',0,7],
-    ['abbey','Mosteiro',980,24,19,'Alas de pedra em torno de um claustro aberto.',0,10],
+    ['chapel','Capela',420,9,12,'Uma nave com torre sineira que evolui até o Santuário Imperial. As melhorias maiores exigem espaço livre.',0,3],
+    ['church','Igreja de pedra',720,14,19,'Igreja de rosácea que evolui até a Catedral Imperial. As melhorias maiores exigem espaço livre.',0,7],
+    ['abbey','Mosteiro',980,24,19,'Alojamentos em alas de pedra em torno de um claustro aberto.',12,10],
     ['council','Casa do conselho',590,13,11,'Um salão público com pórtico e estandarte.',0,7],
-    ['barracks','Quartel da guarda',520,14,11,'Alojamento da guarda com pátio de treino.',0,10],
+    ['barracks','Quartel da guarda',520,14,11,'Alojamento da guarda com pátio de treino.',10,10],
     ['stable','Estábulo',330,12,8,'Cobertura ampla para cavalos e carroças.',0,5],
-    ['watch','Torre de vigia',300,6,6,'Torre alta de madeira para vigiar os arredores.',0,3]
+    ['watch','Torre de vigia',300,6,6,'Posto de observação que evolui da madeira até a torre imperial.',0,3]
   ],
   castle: [
-    ['stockade','Castelo Nível 1',980,34,34,'Paliçada de cedro com portão de duas folhas, casa da guarda, fogueira e torre de vigia acessível.',0,7],
-    ['keep','Grande castelo',2300,34,34,'Fortaleza com salão, torres, pátio e ponte levadiça.',0,15]
+    ['stockade','Castelo Nível 1',980,34,34,'Paliçada de cedro com portão de duas folhas, casa da guarda, fogueira e torre de vigia acessível.',12,7],
+    ['keep','Grande castelo',2300,34,34,'Fortaleza com salão, torres, pátio e ponte levadiça.',30,15]
   ],
   walls: [
     ['villageWall','Muralha da vila',1200,0,0,'Cerca todo o território com uma muralha de nível 1 e três portões.'],
@@ -48,11 +61,12 @@ const byCategory = {
     ['squareTower','Torre quadrada',235,6,6,'Torre de pedra com ameias no terraço.'],
     ['roundTower','Torre circular',258,6,6,'Torre circular com cobertura de ardósia.'],
     ['woodGate','Portão de madeira',120,6,2,'Portão de duas folhas para paliçadas e cercas.'],
+    ['waterGate','Comporta do lago',0,12,3.72,'Comporta de pedra e cedro com duas folhas laterais e vão livre por cima.'],
     ['cityGate','Portão do reino',290,8,4,'Portão de pedra com duas folhas que se abrem para dentro da muralha.'],
     ['drawGate','Portão fortificado',385,8,10,'Portão com grade e ponte levadiça operáveis.'],
     ['steps','Escadaria da muralha',74,2,7,'Escadaria de pedra para alcançar a ronda.'],
     ['lowWall','Mureta de pedra',25,4,0.7,'Mureta baixa para delimitar jardins e pátios.'],
-    ['palisade','Paliçada',31,4,1,'Muralha de madeira de nível 1. Permite construir em linha e reforçar com uma base de pedra no nível 2.']
+    ['palisade','Paliçada',31,4,1,'Muralha modular que pode ser construída em linha e melhorada até o nível 10.']
   ],
   roads: [
     ['dirt','Estrada de terra',8,2,2,'Estrada de terra batida para ligar os lotes.'],
@@ -60,7 +74,12 @@ const byCategory = {
     ['gravel','Caminho de cascalho',10,2,2,'Trilha clara para jardins, pomares e arredores.'],
     ['paving','Piso de pátio',15,2,2,'Lajes quadradas para praças e pátios.'],
     ['walkway','Passarela de madeira',20,2,2,'Pranchas sobre apoios baixos.'],
-    ['bridge','Ponte de madeira',115,5,18,'Ponte com corrimãos para cruzar o rio ou um fosso.']
+    ['bridge','Ponte de madeira',115,5,18,'Ponte com corrimãos para cruzar o rio ou um fosso.'],
+    ['riverBridge','Ponte alta de pedra',320,6,riverBridgeLength,'Arco sobre o canal com rampas para ligar as margens. Gire a ponte para apoiá-la em terra dos dois lados.'],
+    ['terrainSlope','Talude natural',45,0,0,'Clique no pé de uma base elevada para criar uma descida de terra que acompanha o tamanho da calçada e o relevo ao redor.'],
+    ...sidewalks.map(([id,name,price])=>[id,name,price,1,2,id==='sidewalkSteps'
+      ? 'Degraus de pedra que se ajustam à inclinação. Gire a peça para acompanhar a descida.'
+      : 'Peça estreita que acompanha a descida e encaixa junto às ruas e outras calçadas.'])
   ],
   decor: [
     ['bench','Banco de madeira',20,2,0.6,'Assento com pés de ferro.'],
@@ -112,15 +131,17 @@ const byCategory = {
   ].map(([id,name], i) => [id,name,32,0.55,0.55,`Estandarte ${['em mastro','para fachada','para muralha'][i % 3]} com brasão fictício.`])
 };
 
-const retiredWallPieces = new Set(['wall','wallShort','corner','squareTower','roundTower','cityGate','drawGate','steps','lowWall']);
+const retiredWallPieces = new Set(['wall','wallShort','corner','squareTower','roundTower','cityGate','waterGate','drawGate','steps','lowWall']);
 
 export const flags = ['#8b303a','#345b52','#323f71','#5b3565','#576336','#345f7b','#ab5356','#53506c','#866021','#434747','#47776b','#923b42'];
 export const catalogue = Object.fromEntries(categories.flatMap(({ id: category }) =>
   byCategory[category].map(([id,name,price,w,d,description,homes=0,jobs=0], index) => [id,{
     id, name, price, w, d, description, homes, jobs, category, index,
+    sidewalkOf: sidewalkSurfaces.get(id),
+    treads: id==='sidewalkSteps'?8:0,
     purchasable: !retiredWallPieces.has(id),
-    line: ['roads','walls'].includes(category) && ['dirt','cobbles','gravel','paving','walkway','wall','lowWall','palisade'].includes(id),
-    grid: category === 'roads' && id !== 'bridge' ? 2 : category === 'walls' ? 0.5 :
+    line: terrainPaving.has(id)||['walkway','wall','lowWall','palisade'].includes(id),
+    grid: sidewalkSurfaces.has(id) ? 1 : category === 'roads' && !bridges.has(id) ? 2 : category === 'walls' ? 0.5 :
       ['decor','green','lights','banners'].includes(category) ? 0.25 : 1,
     support: ['roads','decor','green','lights','banners'].includes(category)
   }])

@@ -1,6 +1,8 @@
 import { inWater, terrainBounds } from './terrain-data.js';
 import { catalogue } from '../core/catalog.js';
-import { beds, containsPoint, footprint, hasFoundation, supportHeight, gates, straightWalls } from '../core/geometry.js';
+import { bridges } from '../core/water-structures.js';
+import { beds, buildingFoundation, containsPoint, footprint, hasFoundation, maxFoundationSlopeRun,
+  supportHeight, gates, straightWalls } from '../core/geometry.js';
 export { bounds } from './terrain-data.js';
 const empty=[];
 const cellKey=(x,z)=>Math.floor(x/8)+','+Math.floor(z/8);
@@ -21,10 +23,11 @@ export const supportHeightWrapper = (x,z,state,height,surfaces) => supportHeight
 
 export class WalkSurfaces {
   cells=new Map();
-  constructor(objects) {
+  constructor(objects,seed,territory) {
     for(const object of objects){
+      const padding=object.landscaped?(seed===undefined?maxFoundationSlopeRun:buildingFoundation(object,seed,territory).run)+2:0;
       if(catalogue[object.type].category==='roads'||beds.has(object.type)||hasFoundation(object)||
-        straightWalls.has(object.type)||object.type==='steps')addToCells(this.cells,object,0);
+        straightWalls.has(object.type)||object.type==='steps')addToCells(this.cells,object,padding);
     }
   }
 
@@ -35,7 +38,7 @@ export class CollisionGrid {
   cells=new Map();
   constructor(objects) {
     for(const object of objects){
-      if(catalogue[object.type].category==='roads' && object.type!=='bridge')continue;
+      if(catalogue[object.type].category==='roads' && !bridges.has(object.type))continue;
       addToCells(this.cells,object,1);
     }
   }
@@ -44,7 +47,7 @@ export class CollisionGrid {
 
 export function isOpenWater(state,x,z,surfaces,radius=0) {
   return inWater(x,z,state.seed) && !(surfaces?.get(x,z)??state.objects).some(object=>{
-    if(object.type!=='bridge'&&object.type!=='walkway')return false;
+    if(!bridges.has(object.type)&&object.type!=='walkway')return false;
     const plot=footprint(object);
     return Math.abs(x-object.x)<plot.w/2-radius && Math.abs(z-object.z)<plot.d/2-radius;
   });

@@ -1,0 +1,168 @@
+@import '@fontsource-variable/crimson-pro/wght.css';
+@import '@fontsource-variable/dm-sans/wght.css';
+
+.portal {
+  --forest: #26352b;
+  --forest-deep: #1c2a23;
+  --cream: #f5e8cb;
+  --paper: #f0e2c5;
+  --ink: #35271c;
+  --line: #c1a87c;
+  --gold: #e4c282;
+  --burgundy: #773d36;
+  --serif: "Crimson Pro Variable", Georgia, serif;
+  background: var(--forest-deep);
+  font-family: "DM Sans Variable", sans-serif;
+  color: var(--ink);
+  color-scheme: light;
+}
+.portal *, .portal *::before, .portal *::after { box-sizing: border-box; }
+.portal body { margin: 0; min-width: 0; }
+.portal [hidden] { display: none !important; }
+.portal :is(a,button,input,summary):focus-visible { outline: 2px solid #926129; outline-offset: 3px; }
+.portal button, .portal input { font: inherit; }
+.portal button { cursor: pointer; }
+.portal button:disabled { cursor: wait; opacity: .65; }
+.portal img { display: block; max-width: 100%; }
+.portal svg { flex-shrink: 0; width: 17px; height: 17px; }
+.portal h1, .portal h2, .portal p { margin: 0; }
+.portal-bar {
+  min-height: 65px; padding: 10px clamp(16px,4vw,64px); display: flex;
+  align-items: center; justify-content: space-between; gap: 16px;
+  background: #202c24; border-bottom: 1px solid #77684e; color: var(--cream);
+}
+.portal-bar nav { display: flex; align-items: center; gap: clamp(10px,2.3vw,32px); }
+.portal-brand { display: inline-flex; align-items: center; gap: 9px; color: inherit; font: 650 27px/.9 var(--serif); text-decoration: none; }
+.portal-brand img { flex: 0 0 31px; }
+.bar-link { color: var(--cream); font-size: 13px; text-underline-offset: 4px; }
+.bar-link:hover { color: #fff7e4; }
+.portal-button {
+  min-height: 39px; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 8px 12px; background: #faecd0; color: #432f23; text-decoration: none;
+  border: 1px solid #a9875c; border-radius: 3px; font-weight: 650; font-size: 13px;
+}
+.portal-button:hover { background: #ffefd0; border-color: #795634; }
+.primary-button { background: var(--burgundy); border-color: var(--burgundy); color: #fff3dc; }
+.primary-button:hover { background: #8b4b40; border-color: #8b4b40; }
+.portal-message { color: #65372c; background: #ebd3a8; border-left: 2px solid #a36e4d; padding: 9px 11px; font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+
+.login-layout {
+  width: min(1040px,calc(100% - 48px)); margin: clamp(24px,8vh,90px) auto;
+  min-height: 505px; display: grid; grid-template-columns: 1.25fr minmax(330px,1fr);
+  background: var(--paper); border: 1px solid #a58a55; box-shadow: 0 22px 70px #101c14a8;
+}
+.login-illustration { position: relative; min-height: 100%; overflow: hidden; background: #c3b187; border-right: 1px solid #9a8054; }
+.login-illustration::after { content: ""; position: absolute; inset: 13px; border: 1px solid #80704a91; box-shadow: inset 0 0 0 4px #e5d6a962; pointer-events: none; }
+.login-illustration canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: 44% center; }
+.login-panel { display: grid; align-content: center; gap: 15px; padding: clamp(25px,4vw,48px); min-width: 0; }
+.login-panel h1 { font: 650 clamp(39px,5vw,56px)/.88 var(--serif); letter-spacing: -.025em; overflow-wrap: anywhere; }
+.login-panel > p:not(.portal-message) { color: #5f4834; font-size: 14px; line-height: 1.45; }
+.auth-tabs, .atlas-filters { display: flex; gap: 4px; }
+.auth-tabs { margin-top: 5px; border-bottom: 1px solid var(--line); }
+.auth-tabs button, .atlas-filters button {
+  min-height: 37px; padding: 6px 12px; border: 1px solid transparent;
+  background: transparent; color: #523f2d; font-size: 13px; font-weight: 650;
+}
+.auth-tabs button { margin-bottom: -1px; border-bottom-width: 2px; }
+.auth-tabs button[aria-pressed="true"] { color: #672f29; border-bottom-color: var(--burgundy); }
+.auth-tabs button:hover, .atlas-filters button:hover { background: #eddbb7; }
+#auth-form, #session-panel, #register-options { display: grid; gap: 12px; }
+#account-progress { color: #653d35; font-size: 14px; font-weight: 650; }
+#auth-form label, .atlas-search { font-size: 13px; font-weight: 650; display: grid; gap: 5px; }
+#auth-form input:not([type="checkbox"]), .atlas-search input {
+  width: 100%; min-width: 0; min-height: 41px; padding: 8px 10px; color: var(--ink);
+  background: #fff7e4; border: 1px solid #ae9068; border-radius: 3px; font-weight: 500;
+}
+#auth-form .auth-check { display: flex; align-items: center; gap: 7px; }
+.auth-check input { accent-color: var(--burgundy); }
+#register-options details { font-size: 13px; }
+#register-options details[open] label { margin-top: 8px; }
+#register-options summary { cursor: pointer; }
+.guest-link { justify-self: start; color: #633b32; font-size: 13px; text-underline-offset: 3px; }
+
+.atlas-page { width: min(1480px,calc(100% - clamp(24px,7vw,110px))); margin: 0 auto; padding: 25px 0 34px; }
+.atlas-title { display: flex; justify-content: space-between; align-items: end; gap: 12px; color: var(--cream); margin-bottom: 18px; }
+.atlas-title h1 { font: 650 clamp(44px,5vw,67px)/.9 var(--serif); letter-spacing: -.02em; }
+.atlas-title p { margin-top: 6px; color: #dfd4b6; font-size: 14px; }
+.world-status { font-size: 12px; color: #e9c884; white-space: nowrap; display: flex; align-items: center; gap: 6px; }
+.world-status[data-online="true"] { color: #c8dc9e; }
+.world-status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.atlas-content { display: grid; grid-template-columns: minmax(0,1fr) minmax(252px,304px); gap: 14px; }
+.atlas-chart { min-width: 0; margin: 0; padding: 9px; background: #2e3e32; border: 1px solid #817656; align-self: start; }
+.atlas-map { position: relative; border: 1px solid #b29561; isolation: isolate; }
+.atlas-map canvas { display: block; width: 100%; height: auto; }
+.map-markers { position: absolute; inset: 0; pointer-events: none; }
+.map-pin {
+  --pin-color: #793c34;
+  position: absolute; width: clamp(29px,4.1vw,48px); height: clamp(29px,4.1vw,48px);
+  display: grid; place-items: center; padding: 3px 3px 5px; color: var(--cream);
+  background: linear-gradient(#4b362b,var(--pin-color)); border: 1px solid #edce92;
+  border-radius: 6px 6px 6px 2px; box-shadow: 0 2px 5px #30251aa3;
+  transform: translate(-50%,-66%); pointer-events: auto;
+}
+.map-pin.npc { --pin-color: #475b38; }
+.map-pin.mine { --pin-color: #79561f; border-color: #ffe6a4; }
+.map-pin:hover,.map-pin:focus-visible,.map-pin[aria-pressed="true"] { z-index: 1; box-shadow: 0 0 0 2px #62432d; border-color: #fff0bc; }
+.map-pin img { width: 100%; height: 100%; object-fit: contain; min-height: 0; filter: drop-shadow(0 1px 1px #23170c); }
+.pin-name {
+  display: none; position: absolute; top: calc(100% + 4px); padding: 3px 6px;
+  background: #2a241a; color: #fff0d1; border: 1px solid #a88a59; font-size: 11px;
+  max-width: min(145px,35vw); width: max-content; white-space: normal; line-height: 1.2;
+}
+.map-pin:hover .pin-name,.map-pin:focus-visible .pin-name,.map-pin[aria-pressed="true"] .pin-name { display: block; }
+.map-key { display: flex; gap: clamp(10px,2.5vw,26px); padding: 9px 4px 1px; color: var(--cream); font-size: 12px; }
+.map-key span { display: flex; align-items: center; gap: 6px; }
+.map-key i { width: 11px; height: 11px; border: 1px solid #dec998; border-radius: 2px; background: #793c34; }
+.map-key .npc { background: #475b38; }
+.map-key .mine { background: #957234; }
+.atlas-directory {
+  display: flex; flex-direction: column; gap: 11px; min-width: 0; padding: 13px;
+  background: var(--paper); border: 1px solid #ad925e; align-self: start;
+}
+.directory-heading { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.directory-heading h2 { font: 650 32px/.95 var(--serif); }
+.icon-button,.visit-link { min-width: 38px; min-height: 36px; padding: 5px; }
+.atlas-filters { flex-wrap: wrap; }
+.atlas-filters button { min-height: 33px; padding: 4px 9px; border-radius: 3px; }
+.atlas-filters button[aria-pressed="true"] { background: #e6d0a5; border-color: #a6845d; color: #422b21; }
+.atlas-list { max-height: clamp(230px,50vh,486px); overflow-y: auto; scrollbar-width: thin; display: grid; gap: 5px; padding: 3px; margin: -3px; }
+.realm-card {
+  display: grid; grid-template-columns: minmax(0,1fr) 38px; align-items: center;
+  gap: 5px; padding: 4px; background: #faeed2; border: 1px solid #cfb78d; border-radius: 3px;
+}
+.realm-card.active { border-color: #876040; background: #eed8ae; }
+.realm-select { display: flex; align-items: center; text-align: left; gap: 8px; min-width: 0; padding: 0; color: var(--ink); background: none; border: 0; }
+.realm-select strong,.realm-select small { display: block; overflow-wrap: anywhere; }
+.realm-select strong { font: 650 20px/.92 var(--serif); }
+.realm-select small { margin-top: 4px; font-size: 11px; color: #674f3a; }
+.realm-thumb { flex: 0 0 39px; height: 37px; padding: 3px; display: grid; place-items: center; color: #7e5042; background: #e9d4ad; }
+.realm-thumb.npc { background: #d8d7ab; }
+.realm-thumb img { width: 100%; height: 100%; object-fit: contain; min-height: 0; }
+.atlas-empty,.world-actions p { padding: 6px 2px; font-size: 13px; color: #644e38; line-height: 1.4; }
+.world-actions:empty { display: none; }
+.world-actions { border-top: 1px solid var(--line); padding-top: 9px; }
+.world-actions .portal-button { width: 100%; text-align: center; }
+
+@media (min-width: 851px) {
+  .atlas-page { max-width: max(800px,calc((100svh - 244px) * 12 / 7 + 324px)); }
+}
+@media (max-width: 850px) {
+  .atlas-content { grid-template-columns: minmax(0,1fr); }
+  .atlas-list { grid-template-columns: repeat(2,minmax(0,1fr)); max-height: 280px; }
+}
+@media (max-width: 640px) {
+  .portal-bar { min-height: 58px; gap: 8px; }
+  .portal-brand { font-size: 21px; gap: 5px; }
+  .portal-brand img { width: 25px; height: 28px; flex-basis: 25px; }
+  .portal-bar nav { gap: 9px; }
+  .bar-link { font-size: 11px; }
+  .login-layout { width: calc(100% - 24px); margin: 14px auto 30px; grid-template-columns: minmax(0,1fr); }
+  .login-illustration { height: 118px; border-right: 0; border-bottom: 1px solid #9a8054; }
+  .login-illustration::after { inset: 7px; }
+  .login-panel { padding: 22px 18px 24px; }
+  .atlas-page { padding-top: 18px; }
+  .atlas-title { align-items: start; flex-direction: column; gap: 7px; margin-bottom: 12px; }
+  .atlas-chart { padding: 5px; }
+  .atlas-list { grid-template-columns: minmax(0,1fr); }
+  .realm-select strong { font-size: 21px; }
+}

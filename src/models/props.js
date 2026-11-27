@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { catalogue, flags } from '../core/catalog.js';
+import { riverBridgeDeck } from '../core/water-structures.js';
 import { random } from '../world/terrain-data.js';
-import { group,cube,cyl,ball,disc,beam,roof,masonry,cloth,animated,fire } from './kit.js';
+import { group,cube,cyl,ball,disc,beam,roof,masonry,cloth,animated,fire,materials } from './kit.js';
 
 export function barrel(p,x,z,s=1,y=0) {
   for(let i=0;i<3;i++){
@@ -197,8 +198,103 @@ function banner(p,id) {
   }
 }
 
+function bridgeSection(parent,material,left,right,a,b,lowA,lowB,topA,topB){
+  const geometry=new THREE.BufferGeometry();
+  geometry.setAttribute('position',new THREE.Float32BufferAttribute([
+    left,lowA,a, right,lowA,a, right,lowB,b, left,lowB,b,
+    left,topA,a, right,topA,a, right,topB,b, left,topB,b,
+  ],3));
+  geometry.setIndex([0,1,2,0,2,3,4,6,5,4,7,6,0,4,5,0,5,1,
+    1,5,6,1,6,2,2,6,7,2,7,3,3,7,4,3,4,0]);
+  const flat=geometry.toNonIndexed();
+  geometry.dispose();
+  flat.computeVertexNormals();
+  const mesh=new THREE.Mesh(flat,materials[material]);
+  mesh.castShadow=mesh.receiveShadow=true;
+  parent.add(mesh);
+}
+
+function riverBridge(parent,w,d,rng){
+  const half=d/2,arch=10;
+  const soffit=z=>-.94+5.75*Math.sqrt(Math.max(0,1-(z/arch)**2));
+  const stone=['stone','mortar','patio','lightStone'];
+  const step=.625,count=Math.round(d/step);
+  for(let i=0;i<count;i++){
+    const a=-half+i*step,b=a+step;
+    const topA=riverBridgeDeck(a),topB=riverBridgeDeck(b);
+    const overWater=Math.abs((a+b)/2)<arch;
+    const lowA=overWater?soffit(a):-2.8,lowB=overWater?soffit(b):-2.8;
+    bridgeSection(parent,stone[Math.floor(rng()*3)],-w/2,w/2,a,b,lowA,lowB,topA-.09,topB-.09);
+    for(let lane=0;lane<4;lane++){
+      const left=-w/2+w*lane/4;
+      bridgeSection(parent,stone[Math.floor(rng()*4)],left+.018,left+w/4-.018,a+.024,b-.024,
+        topA-.10,topB-.10,topA,topB);
+    }
+    for(const side of [-1,1]){
+      const x=side*(w/2-.22);
+      bridgeSection(parent,i%3?'stone':'lightStone',x-.20,x+.20,a,b,topA-.12,topB-.12,topA+.78,topB+.78);
+      bridgeSection(parent,'lightStone',x-.244,x+.244,a,b,topA+.72,topB+.72,topA+.85,topB+.85);
+      if(overWater){
+        const face=side*(w/2+.025),a1=a+.018,b1=b-.018;
+        bridgeSection(parent,i%3?'lightStone':'patio',face-.06,face+.06,a1,b1,
+          soffit(a1)-.055,soffit(b1)-.055,
+          Math.min(topA-.12,soffit(a1)+.43),Math.min(topB-.12,soffit(b1)+.43));
+      }
+      if(i%8===0||i===count-1)cube(parent,'lightStone',x,(topA+topB)/2+.49,(a+b)/2,.57,1.08,.30);
+    }
+  }
+}
+
+const roadSubstrate=new THREE.BoxGeometry(1,1,1,8,1,8);
+const sidewalkSubstrate=new THREE.BoxGeometry(1,1,1,4,1,8);
+const pavingSlab=new THREE.BoxGeometry(1,1,1,3,1,3);
+
+function stoneSlabs(p,w,d,cols,rows,top,rng,subdivide){
+  const tileW=w/cols,tileD=d/rows, thickness=.041;
+  const stones=['stone','mortar','pebble','patio','lightStone'];
+  for(let x=0;x<cols;x++)for(let z=0;z<rows;z++){
+    const material=stones[Math.floor(rng()*stones.length)];
+    const slab=cube(p,material,(x+.5)*tileW-w/2,top-thickness/2,(z+.5)*tileD-d/2,
+      tileW*(.88+rng()*.08),thickness,tileD*(.84+rng()*.09));
+    if(subdivide)slab.geometry=pavingSlab;
+    slab.rotation.y=(rng()-.5)*.108;
+  }
+}
+
+export function pavedTread(p,w,d,bottom,top,rng){
+  const mortarTop=top-.041;
+  cube(p,'mortar',0,(mortarTop+bottom)/2,0,w,mortarTop-bottom,d);
+  stoneSlabs(p,w,d,2,1,top,rng,true);
+}
+
+export const sidewalkStonePattern=()=>random(182+catalogue.sidewalkPaving.index*51);
+
 export function road(p,id) {
-  const item=catalogue[id], {w,d}=item, rng=random(182+item.index*51);
+  const item=catalogue[id], {w,d}=item;
+  const rng=id==='sidewalkPaving'||item.treads?sidewalkStonePattern():random(182+item.index*51);
+  if(item.treads){
+    const depth=d/item.treads;
+    for(let i=0;i<item.treads;i++){
+      const tread=group(p);
+      tread.position.z=(i+.5)*depth-d/2;
+      pavedTread(tread,w,depth,0,.16+i*.12,rng);
+    }
+    return;
+  }
+  if(id==='terrainSlope'){
+    const apron=new THREE.PlaneGeometry(6,4,12,8).rotateX(-Math.PI/2);
+    const points=apron.attributes.position;
+    for(let i=0;i<points.count;i++){
+      const x=points.getX(i),z=points.getZ(i);
+      const t=Math.min(1,Math.hypot(Math.max(0,Math.abs(x)-1.15),Math.max(0,Math.abs(z)-.6))/1.55);
+      points.setY(i,1.2*(1-t*t*(3-2*t)));
+    }
+    apron.computeVertexNormals();
+    p.add(new THREE.Mesh(apron,materials.grass));
+    cube(p,'patio',0,1.24,0,2.3,.14,1.2);
+    return;
+  }
+  if(id==='riverBridge')return riverBridge(p,w,d,rng);
   if(id==='bridge'||id==='walkway'){
     const bridge=id==='bridge', count=bridge?42:6;
     for(let i=0;i<count;i++){
@@ -217,19 +313,23 @@ export function road(p,id) {
       }
     }
   } else {
-    cube(p,id==='dirt'?'straw':id==='gravel'?'patio':id==='paving'?'mortar':'darkStone',0,.014,0,w,.052,d);
-    if(id==='cobbles'||id==='paving'){
-      const steps=id==='paving'?2:5;
-      for(let x=0;x<steps;x++) for(let z=0;z<steps;z++){
-        const step=w/steps;
-        const c=cube(p,['stone','mortar','pebble','patio','lightStone'][Math.floor(rng()*5)],
-          (x+.5)*step-w/2,.054,(z+.5)*step-d/2,step*(.88+rng()*.08),.041,step*(.84+rng()*.09));
-        c.rotation.y=(rng()-.5)*.108;
+    const surface=item.sidewalkOf??id;
+    const material={dirt:'straw',gravel:'patio',paving:'mortar',cobbles:'darkStone',walkway:'timber'}[surface];
+    const substrate=cube(p,material,0,.014,0,w,.052,d);
+    substrate.geometry=item.sidewalkOf?sidewalkSubstrate:roadSubstrate;
+    if(surface==='walkway'){
+      const boards=8;
+      for(let i=0;i<boards;i++){
+        const plank=cube(p,i%3?'oak':'timberLight',0,.054,(i+.5)*d/boards-d/2,w-.035,.04,d/boards-.018);
+        plank.geometry=pavingSlab;
       }
-    } else for(let i=0;i<20;i++){
-      const radius=.029+rng()*(id==='gravel'?.065:.039);
-      ball(p,id==='dirt'?(i%2?'soil':'hay'):(i%3?'lightStone':'mortar'),
-        (rng()-.5)*1.91,.038,(rng()-.5)*1.91,radius,.019,radius*.71);
+    } else if(surface==='cobbles'||surface==='paving'){
+      const size=surface==='cobbles'?.4:item.sidewalkOf?.5:1;
+      stoneSlabs(p,w,d,Math.round(w/size),Math.round(d/size),.0745,rng,surface==='paving');
+    } else for(let i=0;i<w*d*5;i++){
+      const radius=.029+rng()*(surface==='gravel'?.065:.039);
+      ball(p,surface==='dirt'?(i%2?'soil':'hay'):(i%3?'lightStone':'mortar'),
+        (rng()-.5)*(w-.09),.038,(rng()-.5)*(d-.09),radius,.019,radius*.71);
     }
   }
 }

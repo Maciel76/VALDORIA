@@ -1,13 +1,14 @@
 import { catalogue } from './catalog.js';
-import { castleTypes, checkPlacement, collidersOverlap, containsPoint, fixedRotation, footprint, gates,
-  INITIAL_HOME_LIMIT, ownsPlot, residentialCount, worldBoxes } from './geometry.js';
+import { buildingUpgrade, buildingYield, canLevel, maxBuildingLevel } from './building-levels.js';
+import { castleTypes, checkPlacement, collidersOverlap, containsPoint, buildingImprovementObstructed, fixedRotation, footprint,
+  foundationSlopeError, gates, hasFoundation, INITIAL_HOME_LIMIT, ownsPlot, plotDimensions, residentialCount, worldBoxes } from './geometry.js';
 import {
-  fortificationRole, fortificationLevel, fortificationUpgradeCost, isFixedFortification,
+  fortificationRole, fortificationLevel, fortificationUpgrade, isFixedFortification,maxFortificationLevel,
   isPerimeterPiece, isVillageGate, isVillageWall, villageWallId
 } from './fortifications.js';
 import { bounds,directions,expansionOptions,LIMIT,MAX_NATURAL_OBSTACLES,naturalObstacle } from '../world/terrain-data.js';
 import { usesLots,validLots } from '../world/lots.js';
-import { onVillagePerimeter, villageGatePositions, villageWallSections } from '../world/perimeter.js';
+import { onVillagePerimeter, validWaterGateId, villageGatePositions, villageWallSections, waterGates } from '../world/perimeter.js';
 
 export const STARTING_GOLD = 5000;
 export const HARVEST_MS = 30000;
@@ -33,7 +34,7 @@ export function upgradeStarter(state) {
   const original=state.objects.find(object=>object.id==='v-0'&&castleTypes.has(object.type));
   if(original){
     original.type='stockade';
-    original.wallLevel??=1;
+    original.wallLevel??=(original.level ?? 1)>1?2:1;
   }
   if(!state.objects.some(isVillageWall)){
     const legacy=state.objects.filter(isPerimeterPiece);
@@ -47,7 +48,7 @@ export function upgradeStarter(state) {
 }
 
 function makeVillageFortifications(territory,legacy=[]){
-  const level=legacy.some(object=>!gates.has(object.type)&&fortificationLevel(object)===2)?2:1;
+  const level=Math.max(1,...legacy.filter(object=>!gates.has(object.type)).map(fortificationLevel));
   const wall={id:villageWallId,type:'villageWall',x:0,z:0,rotation:0,wallLevel:level};
   const entrances=Object.entries(villageGatePositions(territory)).map(([id,position])=>{
     const gate=legacy.find(object=>isVillageGate(object)&&object.id===id);
@@ -58,7 +59,7 @@ function makeVillageFortifications(territory,legacy=[]){
 
 export function economy(state) {
   const {homes,jobs} = state.objects.reduce((sum,object)=>{
-    const item = catalogue[object.type];
+    const item = buildingYield(object);
     sum.homes += item.homes;
     sum.jobs += item.jobs;
     return sum;
@@ -121,6 +122,7 @@ export function edit(state, action, player) {
         return fail('Peça indisponível na loja.');
       }
       if (action.points.some(point=>point.type==='villageWall')) return fail('Compre a muralha inteira na loja.');
+      if (action.points.some(point=>point.type==='terrainSlope')) return fail('Escolha a base que vai receber o talude.');
       const items = [], cost = action.points.reduce((sum,p)=>sum+catalogue[p.type].price,0);
       if (state.gold<cost) return fail('Moedas insuficientes.');
       for (const point of action.points) {
@@ -132,6 +134,13 @@ export function edit(state, action, player) {
         items.push(object);
       }
       return apply({add:items,gold:-cost});
+    }
+    case 'landscape-foundation': {
+      const object=find(), cost=catalogue.terrainSlope.price;
+      const reason=foundationSlopeError(object,state.seed,state.territory);
+      if(reason)return fail(reason);
+      if(state.gold<cost)return fail('Moedas insuficientes.');
+      return apply({remove:[object],add:[{...object,landscaped:true}],gold:-cost});
     }
     case 'move': {
       const object = find();
@@ -163,20 +172,53 @@ export function edit(state, action, player) {
       return {undo:{restoreLandscape:obstacles},objects:[]};
     }
     case 'gate': {
+      if(validWaterGateId(action.id)){
+        const gate=waterGates(state).find(candidate=>candidate.id===action.id);
+        if(!gate)return fail('Comporta indisponível.');
+        const before=state.closedWaterGates??[];
+        if(gate.open&&before.length>=1024)return fail('Limite de comportas fechadas atingido.');
+        state.closedWaterGates=gate.open?[...before,gate.id]:before.filter(id=>id!==gate.id);
+        return {undo:{restoreWaterGates:before},objects:[]};
+      }
       const object = find();
       if (!object || !gates.has(object.type)) return fail('Selecione um portão.');
       return apply({remove:[object],add:[{...object,open:!object.open}]});
     }
+    case 'upgrade-building': {
+      const object=find();
+      const upgrade=buildingUpgrade(object);
+      if(!upgrade)return fail('Esta construção já atingiu o nível máximo ou não tem melhorias.');
+      if(state.gold<upgrade.cost)return fail('Moedas insuficientes.');
+      const castleSpread=object.type==='stockade'&&upgrade.level>=3;
+      const layoutChange={farm:'da fazenda',market:'do mercado',chapel:'da capela',church:'da igreja'}[object.type];
+      if(object.type==='chapel'||object.type==='church'){
+        const before=plotDimensions(object),after=plotDimensions(upgrade.object);
+        if(before.w!==after.w||before.d!==after.d){
+          const reason=checkPlacement(state,upgrade.object,{ignore:object.id});
+          if(reason)return fail(`A ampliação precisa de ${after.w} × ${after.d} m. ${reason}`);
+        }
+      }
+      if(player&&(castleSpread||layoutChange)){
+        const reach=[player.x,player.z,.47,player.y,state.seed,state.territory];
+        if(containsPoint(upgrade.object,...reach)&&!containsPoint(object,...reach)){
+          return fail(`Afaste-se para liberar espaço para a melhoria ${layoutChange??'do castelo'}.`);
+        }
+      }
+      if(layoutChange&&buildingImprovementObstructed(state,object,upgrade.object)){
+        return fail(`Mova os objetos que ocupam o espaço da nova estrutura ${layoutChange}.`);
+      }
+      return apply({remove:[object],add:[upgrade.object],gold:-upgrade.cost});
+    }
     case 'upgrade-walls':
     case 'upgrade-gate': {
       const object = find();
-      const cost = object ? fortificationUpgradeCost(object) : null;
+      const upgrade = object ? fortificationUpgrade(object) : null;
       const gateUpgrade=action.kind==='upgrade-gate';
-      if (cost===null||gateUpgrade!==isVillageGate(object)) {
+      if (!upgrade||gateUpgrade!==isVillageGate(object)) {
         return fail(gateUpgrade?'Melhoria de portão indisponível.':'Melhoria de muralha indisponível.');
       }
-      if (state.gold<cost) return fail('Moedas insuficientes.');
-      return apply({remove:[object],add:[{...object,wallLevel:2}],gold:-cost});
+      if (state.gold<upgrade.cost) return fail('Moedas insuficientes.');
+      return apply({remove:[object],add:[upgrade.object],gold:-upgrade.cost});
     }
     case 'expand': {
       if(usesLots(state.territory)){
@@ -191,6 +233,10 @@ export function edit(state, action, player) {
       return state.gold < cost ? fail('Moedas insuficientes.') : apply({gold:-cost,direction:action.direction,change:1});
     }
     case 'undo': {
+      if(action.change.restoreWaterGates){
+        state.closedWaterGates=action.change.restoreWaterGates;
+        return {objects:[]};
+      }
       if(action.change.lot&&player&&ownsPlot(state.territory,{x:player.x,z:player.z,w:0,d:0})){
         const previous={lots:state.territory.lots.filter(id=>id!==action.change.lot)};
         if(!ownsPlot(previous,{x:player.x,z:player.z,w:.5,d:.5}))return fail('Volte para o território anterior antes de desfazer.');
@@ -222,16 +268,22 @@ export function validatedKingdom(value) {
   const objects = [];
   const edge=bounds(value.territory);
   for (const candidate of value.objects) {
-    const {id,type,x,z,rotation,open,wallLevel} = candidate || {};
-    if (typeof id!=='string' || !/^[a-z0-9-]{1,48}$/.test(id) || ids.has(id) || !Object.hasOwn(catalogue,type) ||
+    const {id,type,x,z,rotation,open,wallLevel,level,landscaped} = candidate || {};
+    if (typeof id!=='string' || !/^[a-z0-9-]{1,48}$/.test(id) || ids.has(id) || validWaterGateId(id) || !Object.hasOwn(catalogue,type) || type==='waterGate' || type==='terrainSlope' ||
+        (landscaped!==undefined&&(landscaped!==true||!hasFoundation(candidate))) ||
         ((id===villageWallId)!==(type==='villageWall')) ||
         !Number.isFinite(x) || !Number.isFinite(z) || x<edge.minX || x>edge.maxX || z<edge.minZ || z>edge.maxZ ||
         !Number.isInteger(rotation) || rotation<0 || rotation>3 ||
         (gates.has(type) && typeof open!=='boolean') ||
-        (wallLevel!==undefined && (![1,2].includes(wallLevel)||!fortificationRole({id,type})))) return null;
+        (wallLevel!==undefined && (!Number.isInteger(wallLevel)||wallLevel<1||
+          wallLevel>maxFortificationLevel({id,type})||!fortificationRole({id,type}))) ||
+        (level!==undefined && (!canLevel(type)||!Number.isInteger(level)||level<1||level>maxBuildingLevel(type)||
+          (type==='stockade'&&level>1&&wallLevel!==2)))) return null;
     ids.add(id);
-    const object={id,type,x,z,rotation,...(gates.has(type)?{open}:{}),...(wallLevel===undefined?{}:{wallLevel})};
-    if(lots&&!isFixedFortification(object)&&!ownsPlot(value.territory,footprint(object)))return null;
+    const object={id,type,x,z,rotation,...(gates.has(type)?{open}:{}),
+      ...(wallLevel===undefined?{}:{wallLevel}),...(level===undefined?{}:{level}),...(landscaped?{landscaped}:{})};
+    const expandedSanctuary=(type==='chapel'||type==='church')&&level>=6;
+    if((expandedSanctuary||lots&&!isFixedFortification(object))&&!ownsPlot(value.territory,footprint(object)))return null;
     objects.push(object);
   }
   if(lots&&(!ids.has(villageWallId)||(!value.territory.lots.length&&residentialCount(objects)>INITIAL_HOME_LIMIT)))return null;
@@ -251,11 +303,15 @@ export function validatedKingdom(value) {
         const point=naturalObstacle(id,value.seed);
         return !point || (legacyLandscape&&point.type==='rock');
       })) return null;
+  const closed=value.closedWaterGates;
+  if(closed!==undefined&&(!Array.isArray(closed)||closed.length>1024||
+    new Set(closed).size!==closed.length||!closed.every(validWaterGateId)))return null;
   return {
     version:1, seed:value.seed, name:value.name.trim(), gold:value.gold, nextTaxAt:value.nextTaxAt,
     time:value.time, sound:value.sound, quality:value.quality,
     territory:lots?{lots:[...value.territory.lots]}:Object.fromEntries(directions.map(direction=>[direction,value.territory[direction]])),
     objects, removedLandscape:[...removedLandscape],
+    ...(closed?.length?{closedWaterGates:[...closed]}:{}),
     ...(value.starterPerimeter===true?{starterPerimeter:true}:{})
   };
 }

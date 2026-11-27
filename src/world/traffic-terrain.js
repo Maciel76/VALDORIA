@@ -1,3 +1,4 @@
+import { bridges } from '../core/water-structures.js';
 import { footprint } from '../core/geometry.js';
 import { inWater,riverX,riverWidth,terrainHeight,visibleTerrainHeight,waterLevel } from './terrain-data.js';
 import { isOpenWater,supportHeightWrapper } from './walk.js';
@@ -44,7 +45,7 @@ export function findSwimmingCourse(state,surfaces,nodes,blocked) {
     .filter(({distance})=>distance<31)
     .sort((a,b)=>a.distance-b.distance).slice(0,28).map(({node})=>node);
   const banks=[15,-7,24,-20,33,-37,45].map(z=>({id:'bank-'+z,x:riverX(z,seed)-riverWidth(z)*.56-3.0,z}));
-  const crossings=state.objects.filter(object=>object.type==='bridge'||object.type==='walkway').map(footprint);
+  const crossings=state.objects.filter(object=>bridges.has(object.type)||object.type==='walkway').map(footprint);
   function clear(a,b){
     const steps=Math.max(1,Math.ceil(Math.hypot(b.x-a.x,b.z-a.z)/.55));
     for(let i=1;i<=steps;i++){

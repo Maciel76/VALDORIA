@@ -1,9 +1,10 @@
 import { catalogue } from './catalog.js';
-import { fixedRotation, gridRound, getLineCandidate, linePositions, gates, containsPoint, footprint,
-  landscapeBlocked, landscapeObstacles } from './geometry.js';
+import { fixedRotation, snapPlacement, getLineCandidate, linePositions, gates, containsPoint, footprint,
+  foundationSlopeError, foundationSlopeTarget, landscapeBlocked, landscapeObstacles } from './geometry.js';
 import { edit } from './kingdom.js';
-import { isFixedFortification,isVillageGate } from './fortifications.js';
+import { fortificationLevel,isFixedFortification,isVillageGate } from './fortifications.js';
 import { bounds,insideTerritory } from '../world/terrain-data.js';
+import { validWaterGateId,waterGates } from '../world/perimeter.js';
 
 function clearingBounds(first,second){
   return {minX:Math.min(first.x,second.x),maxX:Math.max(first.x,second.x)+1,
@@ -12,8 +13,9 @@ function clearingBounds(first,second){
 
 export class Editor {
   constructor(view,hud,onChange) { this.view=view;this.hud=hud;this.onChange=onChange;this.history=[]; }
-  start(state) {
+  start(state,{readOnly=false}={}) {
     this.state=state;
+    this.readOnly=readOnly;
     this.history=[];
     this.cancel();
     this.select(null);
@@ -21,11 +23,13 @@ export class Editor {
   get player() {
     return this.view?.navigation.mode==='walk'?this.view.navigation.position:null;
   }
+  get grading() { return this.placement?.type==='terrainSlope'; }
   select(id) {
-    this.selected=this.state.objects.find(object=>object.id===id) || null;
-    this.selectedObstacle=this.selected?null:this.view?.terrain?.obstacleAt(id)??null;
+    this.selected=this.state.objects.find(object=>object.id===id) ??
+      (validWaterGateId(id)?waterGates(this.state).find(gate=>gate.id===id):null) ?? null;
+    this.selectedObstacle=this.selected||this.readOnly?null:this.view?.terrain?.obstacleAt(id)??null;
     this.view?.markObject(this.selection,Boolean(this.selectedObstacle));
-    this.hud.showSelection(this.selection,Boolean(this.selectedObstacle));
+    this.hud.showSelection(this.selection,Boolean(this.selectedObstacle),this.readOnly);
     if(this.selection)this.hud.positionSelection(this.view?.projectSelection());
   }
   get selection() { return this.selected??this.selectedObstacle; }
@@ -87,12 +91,13 @@ export class Editor {
     const point=object ? {x:object.x,z:object.z} : this.player ?
       {x:this.player.x-Math.sin(this.view.navigation.yaw)*8,z:this.player.z-Math.cos(this.view.navigation.yaw)*8} :
       {x:18,z:18};
-    this.placement={type,rotation:object?.rotation||0,point:null,line:false,repeat:false,anchor:null,move:object};
-    this.aim(point);
+    this.placement={type,rotation:object?.rotation??(type==='riverBridge'?1:0),point:null,line:false,repeat:!object,anchor:null,move:object};
+    if(this.grading)this.updatePreview();
+    else this.aim(point);
     this.hud.toggleCatalogue(false);
     this.view.canvas.focus({preventScroll:true});
   }
-  aim(point,refresh=false) {
+  aim(point,refresh=false,hit) {
     if(this.clearing){
       const entry=this.clearing;
       if(!point||!entry.first||entry.plot)return;
@@ -104,24 +109,30 @@ export class Editor {
     }
     const entry=this.placement;
     if(!entry||!point||(entry.hold&&!refresh))return;
-    const {grid}=catalogue[entry.type];
-    const next={x:gridRound(point.x,grid),z:gridRound(point.z,grid)};
+    if(this.grading){
+      const target=foundationSlopeTarget(this.state,point,hit);
+      if(refresh||target!==entry.target){entry.target=target;this.updatePreview();}
+      return;
+    }
+    entry.cursor=point;
+    const next=snapPlacement(catalogue[entry.type],point,entry.rotation);
     if(!refresh&&next.x===entry.point?.x&&next.z===entry.point?.z)return;
     entry.point=next;
     this.updatePreview();
   }
   nudge(x,z) {
     const entry=this.placement;
-    if(!entry)return;
+    if(!entry?.point)return;
     const step=catalogue[entry.type].grid;
     entry.hold=false;
     this.aim({x:entry.point.x+x*step,z:entry.point.z+z*step});
   }
   rotate(sign) {
+    if(this.grading)return;
     if(this.placement){
       this.placement.rotation=fixedRotation(this.placement.rotation+sign);
       this.placement.anchor=null;
-      this.updatePreview();
+      this.aim(this.placement.cursor,true);
     } else if(this.selected) {
       this.moveSelected({rotation:this.selected.rotation+sign});
     }
@@ -149,20 +160,30 @@ export class Editor {
   }
   updatePreview() {
     const entry=this.placement;
+    if(this.grading){
+      const target=this.state.objects.find(object=>object.id===entry.target?.id);
+      const {seed,territory,gold}=this.state;
+      const cost=catalogue.terrainSlope.price;
+      const reason=foundationSlopeError(target,seed,territory)||(gold<cost?'Moedas insuficientes.':'');
+      this.detail={cost,reason,clearPlots:[]};
+      this.view?.showSlopePreview(target,Boolean(reason));
+      this.hud.showPlacement(entry,this.detail);
+      return;
+    }
     if(!entry?.point)return;
     const item=catalogue[entry.type];
     const points=entry.line && entry.anchor ? linePositions(item,entry.anchor,entry.point,entry.rotation) : [{...entry.point,rotation:entry.rotation}];
-    const options={player:this.player,ignore:entry.move?.id};
+    const options={player:this.player,ignore:entry.move?.id,moving:entry.move};
     const result=getLineCandidate(this.state,item,points,options);
     const reason=result.failures.find(Boolean) || (!entry.move&&this.state.gold<result.total?'Moedas insuficientes.':'');
     const clearPlots=result.failures.every(failure=>!failure||failure===landscapeBlocked)
-      ? points.filter((_,i)=>result.failures[i]===landscapeBlocked).map(point=>footprint({...point,type:entry.type})) : [];
+      ? points.filter((_,i)=>result.failures[i]===landscapeBlocked).map(point=>footprint({...entry.move,...point,type:entry.type})) : [];
     this.detail={points,cost:result.total,reason,clearPlots};
     if(entry.move)this.view?.setMovePreview(entry.move,points[0],Boolean(reason));
     else this.view?.setPreview(points,{type:entry.type},result.failures.map(failed=>failed||this.state.gold<result.total));
     this.hud.showPlacement(entry,this.detail);
   }
-  confirm(point) {
+  confirm(point,hit) {
     if(this.clearing){
       if(point)this.markClearing(point);
       else if(this.clearing.plot)this.clearTerrain();
@@ -170,7 +191,7 @@ export class Editor {
     }
     if(point&&this.placement){
       this.placement.hold=false;
-      this.aim(point,true);
+      this.aim(point,true,hit);
     }
     const entry=this.placement;
     if(!entry||!this.detail)return;
@@ -182,6 +203,13 @@ export class Editor {
       this.hud.notify(this.detail.reason);
       return;
     }
+    if(this.grading){
+      if(!this.apply({kind:'landscape-foundation',id:entry.target.id}))return;
+      if(entry.repeat)this.updatePreview();
+      else this.cancel();
+      this.hud.notify('Talude natural aplicado.');
+      return;
+    }
     if(entry.line&&!entry.anchor){entry.anchor={...entry.point};this.updatePreview();return;}
     const points=this.detail.points.map(point=>({...point,type:entry.type}));
     const result=this.apply(entry.move ? {kind:'move',id:entry.move.id,...points[0]} : {kind:'place',points});
@@ -190,26 +218,30 @@ export class Editor {
       const id=entry.move.id;
       this.cancel();this.select(id);
       this.hud.notify('Construção movida.');
-    } else if(entry.repeat) {
+      return;
+    }
+    if(entry.repeat) {
       entry.anchor=null;entry.hold=false;this.updatePreview();
-      this.hud.notify(points.length===1?'Construção concluída.':`${points.length} peças construídas.`);
     } else {
       this.cancel();
-      this.hud.notify(points.length===1?'Construção concluída.':`${points.length} peças construídas.`);
     }
+    this.hud.notify(points.length===1?'Construção concluída.':`${points.length} peças construídas.`);
   }
   moveSelected({rotation}={}) {
     const object=this.selected;
     if(!object)return;
     if(rotation===undefined){this.startPlacement(object.type,object);return;}
-    if(this.apply({kind:'move',id:object.id,x:object.x,z:object.z,rotation})){this.select(object.id);this.hud.notify('Construção girada.');}
+    const item=catalogue[object.type];
+    const {x,z}=item.sidewalkOf?snapPlacement(item,object,rotation):object;
+    if(this.apply({kind:'move',id:object.id,x,z,rotation})){this.select(object.id);this.hud.notify('Construção girada.');}
   }
   upgradeFortification(kind) {
     if(!this.selected)return;
     const gate=isVillageGate(this.selected);
     if(this.apply({kind,id:this.selected.id})){
       this.select(this.selected.id);
-      this.hud.notify(gate?'Portão melhorado para o nível 2.':'Muralha melhorada para o nível 2.');
+      const level=fortificationLevel(this.selected);
+      this.hud.notify(gate?`Portão melhorado para o nível ${level}.`:`Muralha melhorada para o nível ${level}.`);
     }
   }
   remove() {
@@ -222,20 +254,29 @@ export class Editor {
     }
   }
   toggleGate(id) {
-    const object=this.state.objects.find(o=>o.id===id);
+    const object=this.state.objects.find(o=>o.id===id) ??
+      (validWaterGateId(id)?waterGates(this.state).find(gate=>gate.id===id):null);
     if(!object || !gates.has(object.type))return;
     if(object.open&&this.player&&containsPoint({...object,open:false},this.player.x,this.player.z,.45)){
       this.hud.notify('Afaste-se da passagem antes de fechar o portão.');
       return;
     }
-    if(this.apply({kind:'gate',id})){this.select(this.selection?.id);this.hud.notify(object.open?'Portão fechado.':'Portão aberto.');}
+    if(this.apply({kind:'gate',id})){
+      this.select(this.selection?.id);
+      const message=object.type==='waterGate'
+        ? (object.open?'Comporta fechada.':'Comporta aberta.')
+        : (object.open?'Portão fechado.':'Portão aberto.');
+      this.hud.notify(message);
+    }
   }
   apply(action) {
     const result=edit(this.state,action,this.player);
     if(result.error){this.hud.notify(result.error);return null;}
     this.history.push(result.undo);
     if(this.history.length>100)this.history.shift();
-    this.onChange({modified:true,created:action.kind==='place'?result.objects.map(o=>o.id):[]});
+    const reveal=action.kind==='place'||(action.kind==='upgrade-building'&&
+      result.objects.some(o=>['market','watermill','windmill','chapel','church'].includes(o.type)));
+    this.onChange({modified:true,created:reveal?result.objects.map(o=>o.id):[]});
     return result;
   }
   undo() {

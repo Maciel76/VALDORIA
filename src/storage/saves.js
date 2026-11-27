@@ -1,8 +1,8 @@
 import { createId, validatedKingdom } from '../core/kingdom.js';
 import { makeKingdom } from '../world/demo.js';
+import { importKey, request } from './account.js';
 
 const prefix = 'reino-valdoria';
-const profileKey = prefix+'-profile';
 let dbPromise;
 const local = () => dbPromise ||= new Promise((resolve,reject)=>{
   const request = indexedDB.open(prefix+'-saves',1);
@@ -20,17 +20,40 @@ async function access(mode, fn) {
     transaction.onerror = () => reject(transaction.error);
   });
 }
-export function profile() {
-  try { return JSON.parse(localStorage.getItem(profileKey)); } catch { return null; }
-}
-export function setProfile(value) { localStorage.setItem(profileKey, JSON.stringify(value)); }
-export async function request(path, {method='GET',payload,token=profile()?.token}={}) {
-  const result = await fetch('/api'+path,{method,signal:AbortSignal.timeout(6000),headers:{
-    ...(payload!==undefined?{'Content-Type':'application/json'}:{}),...(token?{Authorization:'Bearer '+token}:{})
-  },...(payload!==undefined?{body:JSON.stringify(payload)}:{})});
-  const data = await result.json();
-  if (!result.ok) throw Object.assign(new Error(data.error || 'Falha ao sincronizar.'),{status:result.status,data});
-  return data;
+const localKey = (slot,accountId) => accountId ? accountId+':'+slot : slot;
+
+async function readSlot(slot, accountId) {
+  let record;
+  const importLocal = accountId && slot==='own' && sessionStorage.getItem(importKey)===accountId;
+  await access('readwrite',store=>{
+    const lookup = store.get(localKey(slot,accountId));
+    lookup.onsuccess = () => {
+      record = lookup.result;
+      if (!accountId && record?.profileId) {
+        const legacy = record;
+        record = null;
+        const destination = localKey(slot,legacy.profileId);
+        const existing = store.get(destination);
+        existing.onsuccess = () => {
+          if (!existing.result) store.put(legacy,destination);
+          store.delete(slot);
+        };
+      } else if (accountId && !record) {
+        const lookupLegacy = store.get(slot);
+        lookupLegacy.onsuccess = () => {
+          const legacy = lookupLegacy.result;
+          if (legacy && (legacy.profileId===accountId || (importLocal && !legacy.profileId))) {
+            record = legacy;
+            store.put(legacy,localKey(slot,accountId));
+            store.delete(slot);
+          }
+        };
+      }
+    };
+    return lookup;
+  });
+  if (importLocal) sessionStorage.removeItem(importKey);
+  return record;
 }
 
 export class SaveManager {
@@ -43,6 +66,7 @@ export class SaveManager {
   saving = null;
   sequence = 0;
   remoteProfile = null;
+  account = null;
 
   constructor(status) { this.status = status; }
 
@@ -53,16 +77,16 @@ export class SaveManager {
     this.remoteProfile = null;
     this.conflicted = false;
     let saved;
-    try { saved = await access('readonly',store=>store.get(slot)); }
+    try { saved = await readSlot(slot,this.account?.id); }
     catch { this.status('Falha ao abrir IndexedDB.'); }
     const valid=validatedKingdom(saved?.state);
     this.current = valid ? {...saved,state:valid} : null;
-    const account=profile();
+    const account=this.account;
     if (account && this.current?.profileId===account.id) {
       this.revision = this.current.revision || 0;
       this.remoteProfile = this.current.profileId;
     }
-    return this.current?.state || makeKingdom(kind);
+    return this.current ? structuredClone(this.current.state) : makeKingdom(kind);
   }
 
   async connect() {
@@ -74,15 +98,17 @@ export class SaveManager {
   }
 
   async prepareSync() {
-    if (this.slot!=='own' || !profile()?.id) return null;
+    if (this.slot!=='own' || !this.account?.id) return null;
     await this.saving;
-    const remote = await request('/kingdom');
-    const hasSameIdentity = this.current?.profileId===profile().id;
+    const sequence = this.sequence;
+    const remote = await request('/kingdom',{account:this.account});
+    if (this.slot!=='own' || this.sequence!==sequence) return null;
+    const hasSameIdentity = this.current?.profileId===this.account.id;
     if (remote.state && (!hasSameIdentity || remote.revision!==this.revision)) {
       if (hasSameIdentity && this.current?.pending) {
         // Reuse the operation ID when the response to a previous write was lost.
         try {
-          const result = await request('/kingdom',{method:'PUT',payload:{
+          const result = await request('/kingdom',{account:this.account,method:'PUT',payload:{
             state:this.current.state,revision:this.revision,operation:this.current.pending
           }});
           if (result.duplicate && result.revision===remote.revision) {
@@ -94,7 +120,7 @@ export class SaveManager {
           }
         } catch { /* Preserve the two versions for the owner to choose. */ }
       }
-      if (!this.current) return this.useRemote(remote);
+      if (!this.current || (hasSameIdentity && !this.current.pending)) return this.useRemote(remote,{backup:false});
       this.conflicted = true;
       this.status('Conflito de versões');
       return remote;
@@ -105,27 +131,30 @@ export class SaveManager {
   }
 
   async write(record,slot=this.slot) {
-    try { await access('readwrite',store=>store.put(record,slot)); }
+    try { await access('readwrite',store=>store.put(record,localKey(slot,this.account?.id))); }
     catch (error) { throw Object.assign(error,{storageFailure:true}); }
   }
 
-  async useRemote(remote) {
-    if (this.current) await this.write(this.current,'backup');
+  async useRemote(remote,{backup=true}={}) {
     const valid = validatedKingdom(remote.state);
     if (!valid) throw new Error('A versão online é inválida.');
+    if (backup && this.current) await this.write(this.current,'backup');
     this.revision = remote.revision;
     this.remoteProfile = remote.id;
     this.conflicted = false;
     this.current = {state:valid,revision:this.revision,profileId:remote.id,pending:null};
-    await this.write(this.current);
-    this.status('Sincronizado');
-    return valid;
+    try {
+      await this.write(this.current);
+      this.status('Sincronizado');
+    } catch { this.status('Não foi possível salvar a cópia neste navegador.'); }
+    return structuredClone(valid);
   }
 
   async useLocal(remote, state) {
     this.revision = remote.revision;
     this.remoteProfile = remote.id;
     this.conflicted = false;
+    if (this.current) this.current.pending = createId();
     await this.save(state,{strict:true});
   }
 
@@ -145,11 +174,19 @@ export class SaveManager {
     while (this.queued) {
       const {state,version,slot} = this.queued;
       this.queued = null;
-      const account=profile();
+      const account=this.account;
       const online = slot==='own' && this.online && account?.id && this.remoteProfile===account.id && !this.conflicted;
       const operation = createId();
-      const sameState = this.current?.pending && JSON.stringify(this.current.state)===JSON.stringify(state);
-      let record = {state,revision:this.revision,profileId:this.remoteProfile,pending:sameState?this.current.pending:operation};
+      const sameState = this.current && JSON.stringify(this.current.state)===JSON.stringify(state);
+      if (sameState && !this.current.pending && (!online || this.current.profileId===account.id)) {
+        if (online) {
+          synced = {revision:this.revision,version};
+          this.status('Sincronizado');
+        }
+        continue;
+      }
+      let record = {state,revision:this.revision,profileId:account?.id,
+        pending:sameState && this.current.pending ? this.current.pending : operation};
       this.current = record;
       let stored = false;
       try {
@@ -159,7 +196,7 @@ export class SaveManager {
       } catch { this.status('O navegador não salvou o progresso.'); }
       if (!online) continue;
       try {
-        const response = await request('/kingdom',{method:'PUT',payload:{state,revision:this.revision,operation:record.pending}});
+        const response = await request('/kingdom',{account,method:'PUT',payload:{state,revision:this.revision,operation:record.pending}});
         this.revision = response.revision;
         record = {...record,revision:this.revision,pending:null};
         this.current = record;
@@ -173,22 +210,5 @@ export class SaveManager {
     }
     return synced;
   }
-}
-
-export async function register(alias, existingToken) {
-  const token = existingToken || createId()+createId();
-  const result = await request('/profile',{method:'POST',payload:{alias},token});
-  const account = {id:result.id,alias:result.alias,token};
-  setProfile(account);
-  return account;
-}
-
-export async function recoverProfile(code) {
-  const token=code.toLowerCase().replace(/[\s-]/g,'');
-  if(!/^[a-f0-9]{48}$/.test(token))throw new Error('O código de acesso tem 48 caracteres.');
-  const result=await request('/kingdom',{token});
-  const account={id:result.id,alias:result.alias,token};
-  setProfile(account);
-  return account;
 }
 

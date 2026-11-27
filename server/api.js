@@ -1,20 +1,21 @@
-import { createStore, worldSummary } from './store.js';
+import { createStore, kingdomSnapshot, worldSummary } from './store.js';
+import { aliasPattern, credentials, matchesPassword, newSession, passwordRecord,
+  publicAccount, readSession, sessionCookie, tokenPattern } from './accounts.js';
 import { validatedKingdom } from '../src/core/kingdom.js';
-import { catalogue } from '../src/core/catalog.js';
-import { castleTypes } from '../src/core/geometry.js';
-import { isPerimeterPiece } from '../src/world/perimeter.js';
+import { findMission, missionProgress, missionStats, missionStatus } from '../src/core/missions.js';
+import { npcSite, npcSites } from '../src/world/npc-sites.js';
+import { npcKingdom } from '../src/world/npc-kingdom.js';
 
-const tokenPattern = /^[a-f0-9]{48}$/;
-const kingdomId = /^[a-f0-9-]{36}$/;
+const kingdomId = /^(?:[a-f0-9-]{36}|npc-[a-z]+)$/;
 const MAX_BODY = 720_000;
 const MAX_LIVE_ROOMS = 1500;
 
-async function body(request) {
+async function body(request,limit=MAX_BODY) {
   let length = 0;
   const chunks = [];
   for await (const chunk of request) {
     length += chunk.length;
-    if (length > MAX_BODY) throw Object.assign(new Error('Salvamento excede o limite.'),{status:413});
+    if (length > limit) throw Object.assign(new Error('Os dados enviados excedem o limite.'),{status:413});
     chunks.push(chunk);
   }
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
@@ -29,21 +30,72 @@ function send(response,status,data) {
 export function createApi(env=process.env) {
   const store = createStore(env);
   const rooms = new Map();
+  const credentialAttempts = new Map();
+  let hashJobs = 0;
   const prune = setInterval(()=>{
     const now=Date.now();
+    for (const [address,attempt] of credentialAttempts) if (now>=attempt.until) credentialAttempts.delete(address);
     for (const [id,room] of rooms) {
       for (const [player,presence] of room) if (now-presence.at>13000) room.delete(player);
       if (!room.size) rooms.delete(id);
     }
   },6000);
   prune.unref();
-  const known = /^(?:\/health|\/profile|\/kingdom|\/world(?:\/[a-f0-9-]{36}(?:\/presence)?)?)$/;
+  const known = /^(?:\/health|\/profile|\/auth\/(?:register|login|logout|session)|\/kingdom|\/progress|\/world(?:\/(?:[a-f0-9-]{36}|npc-[a-z]+)(?:\/presence)?)?)$/;
+
+  async function authenticate(request,response,db,path) {
+    const address = request.socket.remoteAddress;
+    const now = Date.now();
+    let attempt = credentialAttempts.get(address);
+    if (!attempt || now>=attempt.until) credentialAttempts.set(address,attempt={until:now+60000,count:0});
+    if (attempt.count>=12 || hashJobs>=3) return send(response,429,{error:'Muitas tentativas. Tente novamente em instantes.'});
+    if (!/^application\/json\b/i.test(request.headers['content-type'] || '')) return send(response,415,{error:'Envie os dados de acesso como JSON.'});
+    const input = await body(request,4096) || {};
+    const {username,password} = credentials(input);
+    if (attempt.count>=12 || hashJobs>=3) return send(response,429,{error:'Muitas tentativas. Tente novamente em instantes.'});
+    attempt.count++;
+    hashJobs++;
+    try {
+      const session = newSession();
+      let profile;
+      if (path==='/auth/register') {
+        const legacyCode = input.legacyCode;
+        const alias = typeof input.alias==='string' ? input.alias.trim() : '';
+        if (!aliasPattern.test(alias)) return send(response,400,{error:'Use de 2 a 26 caracteres no nome do jogador.'});
+        if (legacyCode && (typeof legacyCode!=='string' || !tokenPattern.test(legacyCode))) {
+          return send(response,400,{error:'Use um código de acesso válido.'});
+        }
+        profile = await store.createAccount(db,{username,alias,password:await passwordRecord(password),session:session.record,legacyCode});
+        if (!profile) return send(response,401,{error:'Código de acesso inválido ou já convertido em conta.'});
+      } else {
+        const account = await db.findOne({username},{projection:{password:1}});
+        if (!await matchesPassword(password,account?.password)) return send(response,401,{error:'Usuário ou senha incorretos.'});
+        profile = await store.startSession(db,account._id,session.record);
+      }
+      response.setHeader('Set-Cookie',sessionCookie(request,env,session.token));
+      return send(response,path==='/auth/register'?201:200,{account:publicAccount(profile)});
+    } catch(error) {
+      if (error.code===11000) return send(response,409,{error:'Esse usuário já está em uso.'});
+      throw error;
+    } finally {
+      hashJobs--;
+    }
+  }
 
   async function handle(request,response) {
     const path = new URL(request.url,'http://localhost').pathname.replace(/^\/api(?=\/)/,'');
     const method = request.method, token = request.headers.authorization?.replace(/^Bearer /,'') || '';
     if (!known.test(path)) return send(response,404,{error:'Rota indisponível.'});
     try {
+      const fetchSite = request.headers['sec-fetch-site'];
+      if (method!=='GET' && fetchSite && !['same-origin','none'].includes(fetchSite)) {
+        return send(response,403,{error:'Abra o jogo para realizar esta operação.'});
+      }
+      const [ , , id, presence ] = path.split('/');
+      if (id?.startsWith('npc-') && !presence && method==='GET') {
+        const found = npcKingdom(id);
+        return found ? send(response,200,found) : send(response,404,{error:'Castelo de NPC não encontrado.'});
+      }
       let db = await store.getCollection();
       if (path==='/health' && method==='GET') {
         if (db) {
@@ -53,28 +105,54 @@ export function createApi(env=process.env) {
         return send(response,200,{online:Boolean(db),storage:db?'mongodb':'indexeddb'});
       }
       if (!db) return send(response,503,{error:'O mapa online está indisponível. Você pode continuar jogando neste navegador.'});
-      if (path==='/world' && method==='GET') {
-        const records = await db.find({published:{$exists:true}},{projection:{alias:1,'published.name':1,'published.castles':1,'published.buildings':1,'published.at':1}})
-          .sort({'published.at':-1,_id:1}).limit(300).toArray();
-        return send(response,200,{kingdoms:records.map(worldSummary)});
+      if (method==='POST' && ['/auth/register','/auth/login'].includes(path)) return await authenticate(request,response,db,path);
+      const sessionKey = readSession(request);
+      if (path==='/auth/logout' && method==='POST') {
+        if (sessionKey) await store.revokeSession(db,sessionKey);
+        response.setHeader('Set-Cookie',sessionCookie(request,env));
+        return send(response,200,{account:null});
       }
-      const [ , , id, presence ] = path.split('/');
+      if (path==='/world' && method==='GET') {
+        const records = await store.world(db);
+        return send(response,200,{kingdoms:[...records.map(worldSummary),...npcSites]});
+      }
       if (id && kingdomId.test(id) && !presence && method==='GET') {
         const found = await db.findOne({_id:id,published:{$exists:true}},{projection:{alias:1,published:1}});
         return found ? send(response,200,{kingdom:worldSummary(found),state:found.published.state}) :
           send(response,404,{error:'Este reino ainda não está publicado.'});
       }
-      if (!tokenPattern.test(token)) return send(response,401,{error:'Entre com seu perfil.'});
       if (path==='/profile' && method==='POST') {
+        if (!tokenPattern.test(token)) return send(response,401,{error:'Entre com seu perfil.'});
         const {alias} = await body(request) || {};
-        if (typeof alias!=='string' || !/^[\p{L}\p{N}][\p{L}\p{N} .’-]{1,25}$/u.test(alias.trim())) {
+        if (typeof alias!=='string' || !aliasPattern.test(alias.trim())) {
           return send(response,400,{error:'Use de 2 a 26 caracteres no nome do jogador.'});
         }
         const profile = await store.register(db,token,alias.trim());
-        return send(response,200,{id:profile._id,alias:profile.alias,revision:profile.revision,hasKingdom:Boolean(profile.state),published:Boolean(profile.published)});
+        return send(response,200,publicAccount(profile));
       }
-      const profile = await store.profile(db,token);
-      if (!profile) return send(response,401,{error:'Perfil online indisponível.'});
+      const profile = (sessionKey && await store.sessionProfile(db,sessionKey)) ||
+        (tokenPattern.test(token) ? await store.profile(db,token) : null);
+      if (path==='/auth/session' && method==='GET') return send(response,200,{account:profile ? publicAccount(profile) : null});
+      if (!profile) return send(response,401,{error:'Entre com seu perfil.'});
+      const expectedAccount = request.headers['x-valdoria-account'];
+      if (expectedAccount && expectedAccount!==profile._id) return send(response,401,{error:'A conta mudou em outra aba. Reabra o jogo.'});
+      if(path==='/progress' && method==='GET')return send(response,200,{progress:missionProgress(profile.missions)});
+      if(path==='/progress' && method==='POST'){
+        const {id:missionId}=await body(request,4096) || {};
+        const mission=findMission(missionId);
+        if(!mission)return send(response,404,{error:'Missão indisponível.'});
+        const progress=missionProgress(profile.missions);
+        const status=missionStatus(mission,progress.completed,missionStats(profile.state));
+        if(status==='complete')return send(response,200,{progress,duplicate:true});
+        if(status!=='ready')return send(response,409,{error:'Conclua os objetivos e as missões anteriores no Reino principal.'});
+        const updated=await db.findOneAndUpdate({_id:profile._id,revision:profile.revision,missions:{$ne:mission.id}},
+          {$addToSet:{missions:mission.id}},{returnDocument:'after',projection:{missions:1}});
+        if(updated)return send(response,200,{progress:missionProgress(updated.missions)});
+        const latest=await db.findOne({_id:profile._id},{projection:{missions:1}});
+        const current=missionProgress(latest?.missions);
+        if(current.completed.includes(mission.id))return send(response,200,{progress:current,duplicate:true});
+        return send(response,409,{error:'O reino mudou durante o resgate. Sincronize e tente novamente.'});
+      }
       if (path==='/kingdom' && method==='GET') {
         return send(response,200,{state:profile.state || null,revision:profile.revision,id:profile._id,alias:profile.alias,published:Boolean(profile.published)});
       }
@@ -92,16 +170,12 @@ export function createApi(env=process.env) {
         const input = await body(request) || {};
         if (!profile.state) return send(response,409,{error:'Salve seu reino no servidor antes de publicar.'});
         if (input.revision!==profile.revision) return send(response,409,{error:'O reino mudou. Sincronize antes de publicar.'});
-        const {name, objects} = profile.state;
-        const castles = objects.filter(object=>!isPerimeterPiece(object) &&
-          (castleTypes.has(object.type) || ['squareTower','roundTower'].includes(object.type))).length;
-        const buildings = objects.filter(({type})=>['housing','trade','civic','castle'].includes(catalogue[type].category)).length;
-        const published = {name,castles,buildings,at:Date.now(),state:profile.state};
-        const saved = await db.findOneAndUpdate({_id:profile._id,revision:profile.revision},{$set:{published}},{returnDocument:'after'});
+        const published = kingdomSnapshot(profile.state);
+        const saved = await db.findOneAndUpdate({_id:profile._id,revision:profile.revision},{$set:{published,discoverable:true}},{returnDocument:'after'});
         return saved ? send(response,200,{kingdom:worldSummary(saved)}) : send(response,409,{error:'Sincronize o reino novamente.'});
       }
       if (path==='/world' && method==='DELETE') {
-        await db.updateOne({_id:profile._id},{$unset:{published:1}});
+        await db.updateOne({_id:profile._id},{$unset:{published:1},$set:{discoverable:false}});
         rooms.delete(profile._id);
         return send(response,200,{removed:true});
       }
@@ -113,7 +187,7 @@ export function createApi(env=process.env) {
         }
         let room = rooms.get(id);
         if (!room) {
-          if (!await db.findOne({_id:id,published:{$exists:true}},{projection:{_id:1}})) {
+          if (!npcSite(id) && !await db.findOne({_id:id,published:{$exists:true}},{projection:{_id:1}})) {
             return send(response,404,{error:'Este reino ainda não está publicado.'});
           }
           if (rooms.size>=MAX_LIVE_ROOMS) return send(response,503,{error:'Salas de visita lotadas.'});

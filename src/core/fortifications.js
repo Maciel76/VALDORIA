@@ -1,10 +1,11 @@
 export const villageWallId = 'village-wall';
 export const villageGateNames = {'per-4':'Portão sul','per-5':'Portão leste','per-6':'Portão oeste'};
+export const MAX_FORTIFICATION_LEVEL = 10;
 
 export const isPerimeterPiece = object => object.id?.startsWith('per-')===true && !object.id.startsWith('per-road-');
 export const isVillageWall = object => object?.id===villageWallId;
 export const isVillageGate = object => object?.type==='cityGate' && Object.hasOwn(villageGateNames,object.id);
-export const isFixedFortification = object => isVillageWall(object) || isVillageGate(object);
+export const isFixedFortification = object => isVillageWall(object) || isVillageGate(object) || object?.type==='waterGate';
 
 export function fortificationRole(object) {
   if(isVillageWall(object))return 'village-wall';
@@ -20,13 +21,20 @@ export function fortificationRole(object) {
 }
 
 export const fortificationLevel = object => object.wallLevel ?? 1;
+export const maxFortificationLevel = object => fortificationRole(object)==='castle'?2:MAX_FORTIFICATION_LEVEL;
 
 export function fortificationUpgradeCost(object) {
   const role=fortificationRole(object);
-  if(!role||fortificationLevel(object)!==1)return null;
-  if(role==='village-wall')return 850;
-  if(isVillageGate(object))return 250;
-  if(role==='castle')return 450;
-  if(object.type==='palisade')return 36;
-  return null;
+  const level=fortificationLevel(object);
+  const base=role==='village-wall'?850:isVillageGate(object)?250:role==='castle'?450:object.type==='palisade'?36:null;
+  if(base===null||level>=maxFortificationLevel(object))return null;
+  const upgrades=level-1;
+  return Math.ceil(base*(1+.65*upgrades+.08*upgrades**2));
+}
+
+export function fortificationUpgrade(object){
+  const cost=fortificationUpgradeCost(object);
+  if(cost===null)return null;
+  const level=fortificationLevel(object)+1;
+  return {cost,level,object:{...object,wallLevel:level}};
 }

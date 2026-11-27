@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="pt-BR" class="portal">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="theme-color" content="#26352b">
+    <title>Conta do jogador | Reino de Valdória</title>
+    <link rel="icon" href="/crest.svg" type="image/svg+xml">
+  </head>
+  <body>
+    <header class="portal-bar">
+      <a class="portal-brand" href="/"><img src="/crest.svg" alt="" width="31" height="36"> Reino de Valdória</a>
+      <a class="bar-link" href="/mapa.html">Mapa-múndi</a>
+    </header>
+    <main class="login-layout">
+      <div class="login-illustration" aria-hidden="true"><canvas id="login-map"></canvas></div>
+      <section class="login-panel" aria-labelledby="login-title">
+        <h1 id="login-title">Conta do jogador</h1>
+        <p id="login-intro">Entre para continuar seu reino em qualquer navegador.</p>
+        <div class="auth-tabs" id="auth-tabs" role="group" aria-label="Acesso à conta">
+          <button type="button" data-mode="login" aria-pressed="true">Entrar</button>
+          <button type="button" data-mode="register" aria-pressed="false">Criar conta</button>
+        </div>
+        <form id="auth-form" spellcheck="false">
+          <label id="alias-field" hidden>Nome do jogador
+            <input name="alias" maxlength="26" minlength="2" autocomplete="nickname" disabled>
+          </label>
+          <label>Usuário
+            <input name="username" maxlength="24" minlength="3" pattern="[A-Za-z0-9_]{3,24}" autocomplete="username" autocapitalize="none" required>
+          </label>
+          <label>Senha
+            <input name="password" type="password" minlength="8" maxlength="128" autocomplete="current-password" required>
+          </label>
+          <div id="register-options" hidden>
+            <label class="auth-check"><input name="importRealm" type="checkbox" checked> Levar meu reino deste navegador</label>
+            <details>
+              <summary>Já tenho um código de acesso</summary>
+              <label>Código antigo de Valdória
+                <input name="legacyCode" type="password" maxlength="64" autocomplete="off">
+              </label>
+            </details>
+          </div>
+          <button class="portal-button primary-button" type="submit">Entrar</button>
+        </form>
+        <div id="session-panel" hidden>
+          <p id="account-progress"></p>
+          <a class="portal-button primary-button" id="continue-link" href="/">Continuar no meu reino</a>
+          <button class="portal-button" id="logout" type="button">Sair da conta</button>
+        </div>
+        <p class="portal-message" id="auth-message" role="status" hidden></p>
+        <a class="guest-link" id="guest-link" href="/">Jogar sem conta</a>
+      </section>
+    </main>
+    <script type="module" src="/src/login-page.js"></script>
+  </body>
+</html>

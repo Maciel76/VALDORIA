@@ -11,7 +11,7 @@ npm install
 npm run dev
 ```
 
-Abra [http://localhost:5179](http://localhost:5179). A API usa a mesma origem do jogo. O banco padrão é `reino_valdoria`, coleção `kingdoms`, em `mongodb://127.0.0.1:27017`. Copie `.env.example` para `.env` para alterar portas, host e conexão. Com MongoDB indisponível, ainda é possível construir, explorar e salvar no IndexedDB. Use `MONGODB_URI=disabled` para forçar o modo local.
+Abra [o jogo](http://localhost:5179), [a página de conta](http://localhost:5179/login.html) ou [o mapa-múndi](http://localhost:5179/mapa.html). A API usa o servidor MongoDB em `mongodb://127.0.0.1:27017`. Use essa URI no MongoDB Compass para inspecionar o banco `reino_valdoria` e a coleção `kingdoms`. Copie `.env.example` para `.env` para alterar portas, host ou conexão. Com MongoDB indisponível, ainda é possível jogar e salvar no IndexedDB. Use `MONGODB_URI=disabled` para forçar o modo local.
 
 No Windows com nvm, se `node --version` informar que nenhuma versão está ativa, selecione uma versão instalada com `nvm use`. Os testes locais usaram Node.js 22.23.3.
 
@@ -20,7 +20,7 @@ npm run build
 npm start
 ```
 
-A produção serve o build em [http://localhost:4189](http://localhost:4189). Para jogar em rede, os participantes devem acessar a mesma instância. Use o endereço IP da máquina servidora na rede local e permita a porta do jogo no firewall. Para acesso pela internet, disponibilize a instância atrás de HTTPS. O projeto foi entregue localmente.
+A produção serve o build em [http://localhost:4189](http://localhost:4189). Para jogar em rede, os participantes devem acessar a mesma instância. Use o endereço IP da máquina servidora na rede local e permita a porta do jogo no firewall. Para acesso pela internet atrás de um proxy HTTPS, configure `SESSION_SECURE=true`.
 
 ## Construir, explorar e visitar
 
@@ -29,10 +29,16 @@ A produção serve o build em [http://localhost:4189](http://localhost:4189). Pa
 - Em **Construir**, selecione uma peça e posicione a prévia. Clique no terreno ou pressione Enter para confirmar. R e Shift+R giram, Esc cancela e as setas ajustam a prévia. Ative **Linha** para vias e muralhas, ou **Repetir** para continuar colocando a mesma peça.
 - Clique em uma construção para mover, girar ou excluir. Mover e girar são gratuitos. Ctrl+Z desfaz a última operação, inclusive uma linha inteira ou expansão. Uma exclusão só devolve a peça quando desfeita. O custo de expansão aparece antes da compra e cada lado cresce em faixas de 36 m.
 - Na visão aérea, arraste para girar, use o botão direito para deslocar e a roda para aproximar. **Enquadrar castelo**, no lado direito, aproxima a câmera do castelo. **Explorar** alterna para caminhada com WASD ou setas. Arraste para olhar, use J para capturar o mouse e E perto do portão para operá-lo. Em telas de toque, use os botões de caminhada e toque no portão para selecioná-lo.
-- No **Mapa-múndi**, crie um perfil e use **Publicar meu reino**. A publicação mostra um retrato do Reino principal no atlas. Use **Atualizar meu reino** para publicar mudanças posteriores. Busque pelo jogador ou reino, selecione um marcador e abra a visita 3D pelo botão de visitar. Jogadores identificados que estiverem na mesma visita veem os avatares uns dos outros. Cada jogador edita seu próprio reino.
-- O **Código de acesso** do perfil serve para recuperá-lo em outro navegador. Quando o navegador e o servidor têm versões diferentes, escolha a versão a manter. Ao carregar a versão do servidor, a versão local vai para **Cópia de conflito**. Progresso local fica vinculado ao navegador e ao endereço que o abriu.
+- Em **Conta do jogador**, crie um usuário e uma senha. Marque **Levar meu reino deste navegador** para transferir o progresso local do Reino principal para a conta. Use **Já tenho um código de acesso** no cadastro para converter um perfil antigo e manter seu reino. Se houver um conflito entre mudanças locais e online, a versão local pode ser guardada em **Cópia de conflito**.
+- O Reino principal de uma conta nova aparece no **Mapa-múndi** após o primeiro salvamento no MongoDB. As mudanças sincronizadas atualizam a visita. Use **Ocultar meu reino** ou **Mostrar meu reino** para mudar a visibilidade.
+- Casas, castelos e outros alojamentos somam moradores ao reino assim que são construídos. Consulte o número de cada construção no catálogo ou selecione um edifício, inclusive durante uma visita.
+- Selecione uma construção para melhorá-la com ouro. Casas, castelos, fazendas, comércios e edifícios públicos avançam do nível 1 ao 5. A melhoria aumenta as vagas de moradores ou empregos da construção conforme a sua função.
+- No **Livro de missões**, conclua os objetivos do Reino principal e resgate XP para subir o nível da conta. O MongoDB guarda as missões resgatadas da conta. Como visitante sem conta, o livro tem um progresso próprio neste navegador.
+- Busque um jogador ou reino, selecione uma miniatura e abra a visita 3D. O mapa também tem cinco castelos de NPC que podem ser visitados no modo local. Jogadores conectados que estiverem na mesma visita veem os avatares uns dos outros.
 
 ## Castelo Nível 1
+
+Para adicionar variantes visuais por nível, exporte os arquivos GLB para `src/assets/` com o identificador do catálogo, como `hut-nivel-2.glb` ou `farm-nivel-3.glb`. Use a mesma origem e escala do modelo atual. O jogo carrega a variante disponível ao abrir ou melhorar a construção.
 
 A fortificação inicial tem paliçada chanfrada, tábuas e palha texturizadas, salão da guarda aberto, torre de vigia com escada, estandartes pintados, trilha de lajes, barricas e fogueira. Os dois lados do portão giram em torno de dobradiças modeladas no SolidCraft. A colisão acompanha a abertura. A fogueira emite fumaça, brasas e luz ao anoitecer. Bandeiras e fogo são animados em tempo real e respeitam a preferência por movimento reduzido.
 

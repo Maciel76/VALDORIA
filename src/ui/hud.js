@@ -1,6 +1,7 @@
 import { catalogue,categories } from '../core/catalog.js';
 import { economy, expansionCost, HARVEST_MS, times } from '../core/kingdom.js';
-import { gates } from '../core/geometry.js';
+import { buildingLevel, buildingStyle, buildingUpgrade, buildingYield, canLevel, isHousing } from '../core/building-levels.js';
+import { gates, plotDimensions } from '../core/geometry.js';
 import {
   fortificationRole,fortificationLevel,fortificationUpgradeCost,
   isFixedFortification,isVillageGate,isVillageWall,villageGateNames
@@ -10,15 +11,17 @@ import { LOT_SIZE,usesLots } from '../world/lots.js';
 import { icon,refreshIcons } from './icons.js';
 import { drawMinimap } from './atlas-art.js';
 import { fillThumbnails } from './previews.js';
+import { escapeHTML } from './html.js';
+import { missionBook } from './mission-book.js';
 
 const fmt = new Intl.NumberFormat('pt-BR');
+const residentLabel = count => `${fmt.format(count)} ${count===1?'morador':'moradores'}`;
 const clamp = (value,min,max)=>Math.max(min,Math.min(max,value));
 const timeOptions = [['morning','Manhã','cloud-sun'],['noon','Meio-dia','sun'],['sunset','Entardecer','sunset'],['night','Noite','moon']];
 const names={north:'Norte',east:'Leste',south:'Sul',west:'Oeste'};
 const button = (action, name, symbol, options='')=>`<button type="button" data-action="${action}" ${options}>${icon(symbol)}<span>${name}</span></button>`;
 const tool = (action,name,symbol,options='')=>button(action,name,symbol,`class="tool" aria-label="${name}" title="${name}" ${options}`);
 const stat = (symbol,id,label)=>`<div class="stat">${icon(symbol)}<div><strong id="${id}">—</strong><small>${label}</small></div></div>`;
-export const escapeHTML = value => String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[char]);
 
 export class HUD {
   constructor(root) {
@@ -37,6 +40,7 @@ export class HUD {
         </div>
         <div class="game-tools" aria-label="Ajustes do jogo">
           ${tool('time','Alterar horário','cloud-sun')}
+          ${tool('account','Conta do jogador','lock-keyhole')}
           <button type="button" class="tool save-state" data-action="settings" aria-label="Configurações" title="Configurações">${icon('settings-2')}<i class="status-dot" aria-hidden="true"></i></button>
         </div>
         <dialog class="paper catalogue" id="catalogue" aria-labelledby="catalogue-title">
@@ -57,7 +61,7 @@ export class HUD {
           </div>
         </div>
         <div class="camera-tools" aria-label="Zoom da câmera">
-          ${tool('zoom-in','Aproximar','plus')}${tool('zoom-out','Afastar','minus')}${tool('overview','Visão geral','crosshair')}${tool('focus-castle','Enquadrar castelo','castle')}
+          ${tool('zoom-in','Aproximar','plus')}${tool('zoom-out','Afastar','minus')}${tool('overview','Visão geral','crosshair')}${tool('focus-castle','Enquadrar castelo','castle')}${tool('focus-lake','Enquadrar lago','waves')}
           ${button('fortifications','Fortificações da vila','brick-wall','class="tool" aria-label="Fortificações da vila" title="Fortificações da vila" hidden')}
         </div>
         <div class="crosshair" id="crosshair" hidden></div>
@@ -71,6 +75,7 @@ export class HUD {
           ${button('map','Mapa-múndi','map','class="dock-button world-button"')}
           ${button('walk','Explorar','person-standing','class="dock-button" aria-pressed="false"')}
           ${button('territory','Território','expand','class="dock-button"')}
+          ${button('missions','Missões','book-open','class="dock-button mission-button" aria-label="Livro de missões" aria-haspopup="dialog"')}
           <i class="dock-divider"></i>
           ${button('undo','Desfazer','rotate-ccw','class="dock-button undo-button" disabled')}
         </footer>
@@ -78,7 +83,6 @@ export class HUD {
         <div id="visit" class="visit dark" hidden></div>
         <div id="toast" class="toast dark" role="status" aria-live="polite" hidden></div>
         <dialog id="panel" class="paper modal" aria-labelledby="panel-title"></dialog>
-        <dialog id="atlas" class="paper atlas" aria-labelledby="atlas-title"></dialog>
       </main>`;
     this.shop=root.querySelector('#shop-items');
     this.catalogue=root.querySelector('#catalogue');
@@ -123,7 +127,8 @@ export class HUD {
       const owned=perimeter&&this.hasVillageWall;
       return `<button class="item-card" type="button" data-item="${item.id}" aria-pressed="false" title="${item.description}" ${owned?'disabled':''}>
         <span class="item-figure">${icon(categories.find(c=>c.id===this.category).icon)}<img data-model="${perimeter?'palisade':item.id}" alt=""></span>
-        <span class="item-copy"><strong>${item.name}</strong><small>${owned?'Já construída':icon('coins')+fmt.format(item.price)}</small></span>
+        <span class="item-copy"><strong>${item.name}</strong><small>${owned?'Já construída':icon('coins')+fmt.format(item.price)}</small>
+          ${item.homes?`<small>${icon('users-round')}${residentLabel(item.homes)}</small>`:''}</span>
         </button>`;
     }).join('');
     this.shop.scrollTop=0;
@@ -142,9 +147,9 @@ export class HUD {
       return;
     }
     this.items.hidden=false;
-    const size=item.id==='villageWall'?'Todo o território':`${fmt.format(item.w)} × ${fmt.format(item.d)} m`;
+    const size=item.id==='villageWall'?'Todo o território':item.id==='terrainSlope'?'Largura ajustável':`${fmt.format(item.w)} × ${fmt.format(item.d)} m`;
     this.items.innerHTML=`<p>${item.description}</p><div><span>${icon('expand')}${size}</span>
-      ${item.homes?`<span>${icon('users-round')}${item.homes} moradores</span>`:''}
+      ${item.homes?`<span>${icon('users-round')}${residentLabel(item.homes)}</span>`:''}
       ${item.jobs?`<span>${icon('hammer')}${item.jobs} empregos</span>`:''}</div>`;
   }
   toggleCatalogue(open=!this.catalogue.open) {
@@ -163,6 +168,12 @@ export class HUD {
     button.dataset.status=status==='Sincronizado'?'online':status.includes('Conflito')||status.includes('Falha')?'problem':'local';
     const statusLine=this.popup.querySelector('#save-status');
     if(statusLine)statusLine.textContent=status;
+  }
+  account(account) {
+    const button=this.root.querySelector('[data-action="account"]');
+    const label=account ? 'Conta de '+account.alias : 'Entrar ou criar conta';
+    button.title=label;
+    button.setAttribute('aria-label',label);
   }
   state(state,undo,position,guest) {
     const report=economy(state);
@@ -206,19 +217,22 @@ export class HUD {
     this.placement.hidden=!entry;
     if(!entry)return;
     const item=catalogue[entry.type];
+    const grading=entry.type==='terrainSlope';
     const hasReason=Boolean(details.reason);
     const instruction=entry.line
       ? (entry.anchor?'Clique ou toque no fim da linha':'Clique ou toque no início da linha')
+      : grading?'Clique ou toque para aplicar o talude'
+      : entry.repeat?'Clique ou toque em cada local para construir'
       : `Clique ou toque no terreno para ${entry.move?'mover':'construir'}`;
-    this.placement.innerHTML=`<div class="placement-title">${icon('hammer')}<div><strong>${entry.move?'Mover ':'Construir '}${item.name}</strong>
+    this.placement.innerHTML=`<div class="placement-title">${icon(grading?'pickaxe':'hammer')}<div><strong>${grading?'':entry.move?'Mover ':'Construir '}${item.name}</strong>
       <small class="${hasReason?'problem':''}">${details.reason || instruction}</small></div></div>
       <span class="price">${icon('coins')}${fmt.format(entry.move?0:details.cost)}</span>
       <div class="placement-tools">
       ${entry.hold&&details.clearPlots.length?button('clear-landscape','Limpar terreno','pickaxe','class="gate-button compact clear-option"'):''}
-      ${tool('rotate','Girar prévia','rotate-cw')}
+      ${grading?'':tool('rotate','Girar prévia','rotate-cw')}
       ${item.line&&!entry.move?button('line','Linha','route',`class="tool" aria-label="Modo linha" aria-pressed="${entry.line}" title="Traçar linha"`):''}
       ${!entry.move?button('repeat','Repetir','layers',`class="tool" aria-label="Repetir construção" aria-pressed="${entry.repeat}" title="Manter peça selecionada"`):''}
-      ${tool('cancel','Cancelar colocação','x')}
+      ${tool('cancel',entry.repeat?'Sair da construção':'Cancelar colocação','x')}
       </div>`;
     refreshIcons();
   }
@@ -234,43 +248,56 @@ export class HUD {
       </div>`;
     refreshIcons();
   }
-  showSelection(object,natural=false) {
+  showSelection(object,natural=false,readOnly=false) {
     if(!object){this.selection.hidden=true;return;}
     const focused=this.selection.contains(document.activeElement)?document.activeElement.dataset.action:null;
     const role=fortificationRole(object);
+    const item=catalogue[object.type];
+    const upgradable=canLevel(object.type);
+    const level=upgradable?buildingLevel(object):fortificationLevel(object);
+    const occupancy=item?.homes ? residentLabel(buildingYield(object).homes) : '';
+    const upgrade=buildingUpgrade(object);
+    const levelLabel=upgradable&&role!=='castle'?`Nível ${level}`:'';
+    const style=level>1?buildingStyle(object):null;
+    const details=[levelLabel,occupancy].filter(Boolean).join(' · ');
+    const summary=details?`<span class="selection-residents">${style&&!readOnly?`<strong>${style}</strong>`:''}<span>${details}</span></span>`:'';
     this.selection.style.cssText='';
     if(natural){
       this.selection.className='paper obstacle-selection';
       this.selection.hidden=false;
-      const rock=object.type==='rock',name=rock?'Pedra':catalogue[object.type].name;
+      const rock=object.type==='rock',name=rock?'Pedra':item.name;
       this.selection.innerHTML=`<div class="obstacle-selection-heading"><h3>${name}</h3>${tool('clear-selection','Fechar ações','x')}</div>
         <div class="obstacle-selection-actions">
           ${button('delete',rock?'Remover pedra':'Remover árvore','trash-2','class="primary compact"')}
           ${button('mark-clearing','Limpar área','pickaxe','class="outlined compact" data-value="obstacle"')}
         </div>`;
       this.selection.setAttribute('aria-label',`Ações para ${name}`);
-    }else if(role){
+    }else if(readOnly || role || object.type==='waterGate'){
       this.selection.className='paper selection-panel';
       this.selection.hidden=false;
-      const item=catalogue[object.type];
-      const level=fortificationLevel(object);
-      const cost=fortificationUpgradeCost(object);
       const gate=isVillageGate(object);
       const names={castle:`Castelo Nível ${level}`,wall:'Paliçada',tower:'Torre da muralha',
         gate:villageGateNames[object.id]??'Portão da muralha','village-wall':'Muralha da vila'};
-      const name=names[role]??item.name;
-      const caption=role==='castle'?'Muralhas do castelo':`Nível ${level}`;
+      const name=names[role]??style??item.name;
+      const caption=role&&!upgradable?`<small>Nível ${level}</small>`:'';
+      const cost=role==='castle'?null:fortificationUpgradeCost(object);
       const upgradeAction=gate?'upgrade-gate':'upgrade-walls';
       const upgradeLabel=gate?'Melhorar portão':'Melhorar muralha';
-      this.selection.innerHTML=`<div><small>${caption}</small><h3>${name}</h3></div><div class="selection-tools">
-        ${cost===null?'':button(upgradeAction,`Melhorar · ${fmt.format(cost)}`,'coins',`class="gate-button" aria-label="${upgradeLabel} para o nível 2 por ${fmt.format(cost)} de ouro" title="${upgradeLabel}"`)}
-        ${gates.has(object.type)?button('gate',object.open?'Fechar portão':'Abrir portão',object.open?'door-closed':'door-open','class="gate-button"'):''}
-        ${isFixedFortification(object)?'':tool('move','Mover construção','move')+tool('rotate-object','Girar construção','rotate-cw')+tool('delete','Excluir construção','trash-2')}
+      const gateLabel=object.type==='waterGate'
+        ? (object.open?'Fechar comporta':'Abrir comporta')
+        : (object.open?'Fechar portão':'Abrir portão');
+      this.selection.innerHTML=`<div>${caption}<h3>${name}</h3>${summary}</div><div class="selection-tools">
+        ${readOnly||cost===null?'':button(upgradeAction,`Nível ${fortificationLevel(object)+1} · ${fmt.format(cost)}`,'coins',`class="gate-button" aria-label="${upgradeLabel} para o nível ${fortificationLevel(object)+1} por ${fmt.format(cost)} de ouro" title="${upgradeLabel}"`)}
+        ${!readOnly&&cost===null&&upgrade?(role==='castle'
+          ?button('show-building-upgrade',`Melhorar para o nível ${upgrade.level}`,'arrow-up-circle','class="gate-button"')
+          :tool('show-building-upgrade',`Melhorar para o nível ${upgrade.level}`,'arrow-up-circle')):''}
+        ${!readOnly&&gates.has(object.type)?button('gate',gateLabel,object.open?'door-closed':'door-open','class="gate-button"'):''}
+        ${readOnly||isFixedFortification(object)?'':tool('move','Mover construção','move')+tool('rotate-object','Girar construção','rotate-cw')+tool('delete','Excluir construção','trash-2')}
         ${tool('clear-selection','Limpar seleção','x')}</div>`;
-      this.selection.setAttribute('aria-label',`Ações para ${name}`);
+      this.selection.setAttribute('aria-label',`${readOnly?'Construção':'Ações para'} ${name}`);
     }else{
       this.selection.className='selection';
-      this.selection.setAttribute('aria-label',`Ações para ${catalogue[object.type].name}`);
+      this.selection.setAttribute('aria-label',`Ações para ${style??item.name}`);
       const actions=[
         ['move','Mover construção','move'],
         ['rotate-object','Girar construção','rotate-cw'],
@@ -278,7 +305,8 @@ export class HUD {
         ['clear-selection','Limpar seleção','x'],
       ];
       if(gates.has(object.type))actions.unshift(['gate',object.open?'Fechar portão':'Abrir portão',object.open?'door-closed':'door-open']);
-      this.selection.innerHTML=actions.map(([action,label,symbol],index)=>
+      if(upgrade)actions.unshift(['show-building-upgrade',`Melhorar para o nível ${upgrade.level}`,'arrow-up-circle']);
+      this.selection.innerHTML=summary+actions.map(([action,label,symbol],index)=>
         tool(action,label,symbol,`style="--angle:${index*360/actions.length}deg"`)).join('');
     }
     refreshIcons();
@@ -326,6 +354,45 @@ export class HUD {
       else this.popup.show();
     }
     refreshIcons();
+  }
+  showBuildingUpgrade(object, gold) {
+    const upgrade=buildingUpgrade(object);
+    if(!upgrade)return;
+    const item=catalogue[object.type];
+    const style=buildingStyle(upgrade.object);
+    const name=item.id==='stockade'?'Castelo':buildingStyle(object)??item.name;
+    const before=buildingYield(object),after=buildingYield(upgrade.object);
+    const changes=[];
+    if(before.homes!==after.homes)changes.push(`<div>${icon('users-round')}<span>Moradores</span><strong>${before.homes} → ${after.homes}</strong></div>`);
+    if(before.jobs!==after.jobs)changes.push(`<div>${icon('hammer')}<span>Empregos</span><strong>${before.jobs} → ${after.jobs}</strong></div>`);
+    const lot=plotDimensions(object),nextLot=plotDimensions(upgrade.object);
+    if(lot.w!==nextLot.w||lot.d!==nextLot.d){
+      changes.push(`<div>${icon('expand')}<span>Espaço livre necessário</span><strong>${nextLot.w} × ${nextLot.d} m</strong></div>`);
+    }
+    const title={stockade:'Melhorar castelo',watch:'Melhorar torre de vigia',farm:'Melhorar fazenda',
+      market:'Melhorar mercado',watermill:'Melhorar moinho d’água',windmill:'Melhorar moinho de vento',
+      chapel:'Melhorar capela',church:'Melhorar igreja'}[item.id] ??
+      (isHousing(item.id)?'Melhorar moradia':'Melhorar construção');
+    this.modal(title,`<div class="building-upgrade">
+      <h3>${name}</h3><p>Nível ${buildingLevel(object)} → ${upgrade.level}</p>
+      ${style?`<p><strong>${style}</strong></p>`:''}
+      ${changes.length?`<div class="upgrade-effects">${changes.join('')}</div>`:''}
+      ${gold<upgrade.cost?'<p class="upgrade-warning">Moedas insuficientes.</p>':''}
+      ${button('upgrade-building',`Melhorar por ${fmt.format(upgrade.cost)} de ouro`,'coins',
+        `class="primary" data-value="${object.id}" ${gold<upgrade.cost?'disabled':''}`)}
+    </div>`);
+  }
+  get missionsOpen() {
+    return this.popup.open&&this.popup.classList.contains('mission-book');
+  }
+  showMissions(state, progress, selected, notice) {
+    const scrolled=this.missionsOpen?this.popup.querySelector('.mission-index').scrollTop:0;
+    const focused=this.missionsOpen&&document.activeElement.dataset.action==='mission-select'?
+      document.activeElement.dataset.value:null;
+    this.modal('Livro de missões',missionBook(state,progress,selected,notice),'mission-book');
+    const index=this.popup.querySelector('.mission-index');
+    index.scrollTop=scrolled;
+    if(focused)index.querySelector(`[data-value="${CSS.escape(focused)}"]`)?.focus({preventScroll:true});
   }
   showTime(active) {
     this.modal('Horário do reino',`<div class="option-grid">${timeOptions.filter(([id])=>times.includes(id)).map(([id,name,ico])=>
@@ -398,7 +465,8 @@ export class HUD {
       <label>Qualidade gráfica<select name="quality"><option value="low" ${state.quality==='low'?'selected':''}>Leve</option><option value="standard" ${state.quality==='standard'?'selected':''}>Padrão</option><option value="high" ${state.quality==='high'?'selected':''}>Alta</option></select></label>
       <label class="toggle"><input name="sound" type="checkbox" ${state.sound?'checked':''}> Som ambiente</label>
       <button class="primary" type="submit">Aplicar</button></form>
-      <div class="settings-section"><h3>Salvamento</h3><p id="save-status">${escapeHTML(this.saveStatus)}</p><p>${online&&localProfile?'O Reino principal é salvo no servidor quando sincronizado, com uma cópia neste navegador.':'O progresso fica no IndexedDB deste navegador. Crie um perfil no mapa-múndi para sincronizar quando o servidor estiver disponível.'}</p>
+      <div class="settings-section"><h3>Salvamento</h3><p id="save-status">${escapeHTML(this.saveStatus)}</p><p>${localProfile?(online?'O Reino principal é sincronizado com o servidor.':'O servidor está indisponível. O progresso está neste navegador.'):'O progresso fica neste navegador. Entre com sua conta para sincronizar o Reino principal.'}</p>
+      ${button('account',localProfile?'Minha conta':'Entrar ou criar conta','lock-keyhole','class="outlined"')}
       ${conflicted?button('resolve','Resolver conflito','lock-keyhole','class="outlined"'):''}
       ${button('save','Salvar agora','save','class="outlined"')}
       ${button('saves','Trocar reino','layers','class="outlined"')}
@@ -416,7 +484,7 @@ export class HUD {
     this.modal('Controles do jogo',`<dl class="help-content">
       <dt>Vista aérea</dt><dd>Use WASD ou as setas para deslocar a câmera. Arraste para girar e use a roda para aproximar.</dd>
       <dt>Exploração</dt><dd>Use WASD ou as setas. Arraste para olhar ou pressione J para capturar o mouse. Use E próximo a um portão.</dd>
-      <dt>Construção</dt><dd>Escolha uma peça em Construir e clique ou toque no terreno para colocá-la. R gira, Shift + R gira no sentido contrário, Enter confirma e Esc cancela. Use as setas para ajustar a prévia.</dd>
+      <dt>Construção</dt><dd>Escolha uma peça em Construir e clique ou toque em cada local livre para comprar e colocar uma cópia. Use Esc ou o botão X para sair. R gira a prévia, Shift + R gira no sentido contrário, as setas movem e Enter coloca.</dd>
       <dt>Edição</dt><dd>Selecione uma peça para ver as ações ao redor dela. Use Mover e clique ou toque em uma área livre. Delete exclui e Ctrl + Z desfaz. Mover e girar são gratuitos.</dd>
       <dt>Limpeza</dt><dd>Clique ou toque numa árvore natural ou pedra para removê-la. Para limpar um trecho, escolha Limpar área nas ações do obstáculo, marque o canto oposto e confirme. Se uma construção estiver bloqueada, use Limpar terreno na prévia.</dd>
       <dt>Modo linha</dt><dd>Escolha um caminho ou muralha, ative Linha e marque o início e o fim no terreno. A linha inteira é desfeita em uma ação.</dd>
@@ -426,7 +494,7 @@ export class HUD {
   showVisit(guest,count=0) {
     this.visit.hidden=!guest;
     if(!guest)return;
-    this.visit.innerHTML=`<div><strong>${escapeHTML(guest.name)}</strong><small>Reino de ${escapeHTML(guest.alias)}${count?` · ${count} ${count===1?'visitante':'visitantes'}`:''}</small></div>${button('leave','Voltar ao meu reino','log-out','class="compact"')}`;
+    this.visit.innerHTML=`<div><strong>${escapeHTML(guest.name)}</strong><small>${guest.kind==='npc'?'NPC · ':''}Reino de ${escapeHTML(guest.alias)}${count?` · ${count} ${count===1?'visitante':'visitantes'}`:''}</small></div>${button('leave','Voltar ao meu reino','log-out','class="compact"')}`;
     refreshIcons();
   }
 }

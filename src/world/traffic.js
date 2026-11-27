@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import { catalogue } from '../core/catalog.js';
+import { economy } from '../core/kingdom.js';
+import { bridges } from '../core/water-structures.js';
 import { castleTypes, containsPoint, worldBoxes, angleOf } from '../core/geometry.js';
 import { random, waterLevel } from './terrain-data.js';
 import { CollisionGrid, isOpenWater } from './walk.js';
@@ -28,14 +30,14 @@ export function makeRouteGraph(state, blocked) {
   for(const object of state.objects) {
     const item=catalogue[object.type];
     if(item.category==='roads'){
-      add(object.x,object.z,false,true);
-      if(item.id==='bridge')for(let m=-8;m<=8;m+=2) {
+      add(object.x,object.z,false,!item.sidewalkOf);
+      if(bridges.has(item.id))for(let m=1-item.d/2;m<item.d/2;m+=2) {
         const a=angleOf(object.rotation);
         add(object.x+Math.sin(a)*m,object.z+Math.cos(a)*m,false,true);
       }
     } else if(item.jobs || item.homes){
       const entry=worldBoxes(object,[{x:0,z:item.d*.5+.53,w:1,d:1}])[0];
-      const nearer=worldBoxes(object,[{x:0,z:item.d*.43,w:1,d:1}])[0];
+      const nearer=worldBoxes(object,[{x:0,z:item.id==='market'?2.05:item.d*.43,w:1,d:1}])[0];
       terminals.push({...entry,closer:nearer,type:object.type});
       if(castleTypes.has(object.type)){
         for(let n=6;n<=18;n+=2){
@@ -213,13 +215,12 @@ export class Traffic {
   update(state,paused,reduced,terrainChanged) {
     const continuing=this.state===state;
     this.state=state;
-    const {seed,objects}=state;
     this.graph=makeRouteGraph(state,(x,z)=>this.isBlocked(x,z,.31));
     this.nodes=[...this.graph.nodes.values()].filter(n=>this.graph.edges.get(n.id).length>0);
     this.roads=this.nodes.filter(node=>node.road);
     this.doors=this.nodes.filter(node=>node.door);
     this.patrol=this.nodes.filter(node=>node.patrol);
-    this.rng=random(seed+1974+state.objects.length);
+    this.rng=random(state.seed+1974+state.objects.length);
     const previousCourse=this.swimCourse;
     this.swimCourse=findSwimmingCourse(state,this.surfaces,this.roads,this.isBlocked);
     if(!continuing || paused || !this.nodes.length){
@@ -227,8 +228,7 @@ export class Traffic {
       this.people=[];
     }
     if(paused || !this.nodes.length)return;
-    const houses=objects.filter(o=>catalogue[o.type].homes).length;
-    const count=houses?Math.min(state.quality==='low'?8:18,Math.max(6,houses*2+4)):0;
+    const count=Math.min(state.quality==='low'?8:18,Math.ceil(economy(state).homes/2));
     for(const person of this.people.splice(count))person.p.removeFromParent();
     for(let i=0;i<count;i++){
       const type=this.swimCourse&&i===count-1?'swimmer':citizenTypes[i%citizenTypes.length];

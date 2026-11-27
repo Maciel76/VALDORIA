@@ -1,24 +1,28 @@
 import '@fontsource-variable/crimson-pro/wght.css';
 import '@fontsource-variable/dm-sans/wght.css';
 import './ui/styles.css';
-import { HUD,escapeHTML } from './ui/hud.js';
-import { Atlas } from './ui/atlas.js';
+import { HUD } from './ui/hud.js';
+import { escapeHTML } from './ui/html.js';
 import { icon } from './ui/icons.js';
 import { drawMinimap } from './ui/atlas-art.js';
-import { loadLandmarks } from './models/library.js';
+import { loadBuildingUpgrade,loadFortificationKit,loadLandmarks } from './models/library.js';
 import { WorldView } from './world/view.js';
+import { waterGates } from './world/perimeter.js';
+import { lakeCenter } from './world/hydrology.js';
 import { AmbientSound } from './world/audio.js';
 import { BAND,expansionBounds,expansionOptions } from './world/terrain-data.js';
 import { LOT_SIZE,usesLots } from './world/lots.js';
-import { SaveManager,profile,recoverProfile,register,request } from './storage/saves.js';
+import { SaveManager } from './storage/saves.js';
+import { profile,refreshAccount,request,setProfile } from './storage/account.js';
 import { collectTax, expansionCost, upgradeStarter, validatedKingdom } from './core/kingdom.js';
+import { buildingUpgrade } from './core/building-levels.js';
+import { findMission, missionProgress, missionStats, missionStatus } from './core/missions.js';
 import { castleTypes, gates } from './core/geometry.js';
-import { isFixedFortification,isVillageWall,villageWallId } from './core/fortifications.js';
+import { fortificationUpgrade,isFixedFortification,isVillageWall,villageWallId } from './core/fortifications.js';
 import { Editor } from './core/editor.js';
 
 const root = document.querySelector('#app');
 const hud = new HUD(root);
-const atlas = new Atlas(root.querySelector('#atlas'));
 const world = root.querySelector('#world');
 let view;
 try { view = new WorldView(world); }
@@ -26,16 +30,18 @@ catch { world.innerHTML='<p class="paper no-webgl">O modo 3D precisa de um naveg
 const saves = new SaveManager(status=>hud.saved(status));
 const audio = new AmbientSound();
 const editor = new Editor(view,hud,changed);
-const popups = [hud.catalogue,hud.popup,atlas.dialog];
+const popups = [hud.catalogue,hud.popup];
 const active = () => guest?.state || state;
 const modalsOpen = () => popups.some(dialog=>dialog.open);
 const prepareModels = objects => view && loadLandmarks(objects);
 const SLOT_KEY='reino-valdoria-slot';
+const GUEST_MISSIONS_KEY='reino-valdoria-guest-missions';
 const saveKind=key=>key==='demo'?'demo':key==='own'||key==='starter'?'starter':'empty';
 const previousSlot=localStorage.getItem(SLOT_KEY);
 let state, slot=['own','starter','empty','demo','backup'].includes(previousSlot)?previousSlot:'own';
-let guest=null, locked=false, refreshBusy=false, lastMini=0, lastAim=0;
+let guest=null, locked=false, lastMini=0, lastAim=0;
 let territoryDirection=null;
+let progress=missionProgress(), selectedMission=null;
 
 function changed({modified=false,created=[],refreshRoutes=true}={}) {
   if(!active())return;
@@ -52,8 +58,67 @@ function updateHUD() {
   if(hud.territoryOpen)hud.updateTerritory(state,territoryDirection);
 }
 
+function missionNotice() {
+  if(guest||slot!=='own')return 'Resgate missões no Reino principal.';
+  return saves.account&&!saves.online ? 'Conecte-se ao servidor para resgatar XP da conta.' : '';
+}
+
+function renderMissions() {
+  hud.showMissions(slot==='own'?state:null,progress,selectedMission,missionNotice());
+}
+
+function guestMissions() {
+  try { return missionProgress(JSON.parse(localStorage.getItem(GUEST_MISSIONS_KEY))); }
+  catch { return missionProgress(); }
+}
+
+function applyAccountProgress(next) {
+  if(next.completed.length<progress.completed.length)return;
+  progress=next;
+  const cached=profile();
+  if(cached?.id===saves.account.id)setProfile({...cached,progress});
+}
+
+async function openMissions() {
+  editor.cancel();
+  if(document.pointerLockElement)document.exitPointerLock();
+  selectedMission=null;
+  if(!saves.account)progress=guestMissions();
+  renderMissions();
+  if(!saves.account)return;
+  try {
+    const data=await request('/progress',{account:saves.account});
+    saves.online=true;
+    applyAccountProgress(data.progress);
+  } catch(error) {
+    if(!error.status||error.status>=500)saves.online=false;
+    else if(hud.missionsOpen){friendlyError(error);return;}
+  }
+  if(hud.missionsOpen)renderMissions();
+}
+
+async function claimMission(id) {
+  if(missionNotice())return;
+  if(!saves.account)progress=guestMissions();
+  const mission=findMission(id);
+  if(!mission||missionStatus(mission,progress.completed,missionStats(state))!=='ready'){
+    renderMissions();return;
+  }
+  if(saves.account){
+    await saves.save(state,{strict:true});
+    const data=await request('/progress',{account:saves.account,method:'POST',payload:{id}});
+    applyAccountProgress(data.progress);
+  }else{
+    const completed=[...progress.completed,id];
+    localStorage.setItem(GUEST_MISSIONS_KEY,JSON.stringify(completed));
+    progress=missionProgress(completed);
+  }
+  selectedMission=null;
+  if(hud.missionsOpen){renderMissions();tell(`+${mission.xp} XP · Nível ${progress.level}`);}
+}
+
 function tell(message) {
-  let current = atlas.dialog.open?atlas.dialog.querySelector('.world-actions'):hud.popup.open?hud.popup:null;
+  const current = hud.popup.open ? hud.popup : null;
   if(current){
     const prev=current.querySelector('.dialog-message');
     prev?.remove();
@@ -67,17 +132,20 @@ function tell(message) {
 
 function friendlyError(error) { tell(error?.message || 'O servidor de Valdória está indisponível.'); }
 
-async function connectProfile() {
+async function connectProfile({render=true,notify=true}={}) {
   const online=await saves.connect();
-  if(!online||!profile()||slot!=='own'||guest)return online;
+  if(!online||!saves.account||slot!=='own'||guest)return online;
   try {
     const remote=await saves.prepareSync();
     if(!remote)return online;
-    if(saves.conflicted)showConflict(remote);
+    if(saves.conflicted){
+      if(notify)showConflict(remote);
+    }
     else {
       const next=upgradeStarter(remote);
-      await prepareModels(next.objects);
-      state=next;editor.start(state);cameraMode('orbit');view?.navigation.overview(state);changed();
+      if(render)await prepareModels(next.objects);
+      state=next;editor.start(state);
+      if(render){cameraMode('orbit');view?.navigation.overview(state);changed();}
     }
   } catch (error) { if(error.status!==401)friendlyError(error); }
   return online;
@@ -87,42 +155,20 @@ function showConflict(remote) {
   if(!remote?.state)return;
   const activeLocal=escapeHTML(state.name), activeOnline=escapeHTML(remote.state.name);
   hud.modal('Escolha uma versão',`<p class="modal-intro">O navegador tem “${activeLocal}”. O servidor tem “${activeOnline}” na revisão ${remote.revision}. Escolha qual versão deve ficar no Reino principal.</p>
-    <div class="option-grid"><button type="button" data-action="local-version">${icon('save')} Publicar a versão deste navegador</button>
+    <div class="option-grid"><button type="button" data-action="local-version">${icon('save')} Usar a versão deste navegador</button>
       <button type="button" data-action="remote-version">${icon('globe-2')} Carregar a versão do servidor</button></div>`);
 }
 
-async function mapUpdate(open=false) {
-  if(open){
-    editor.cancel();
-    if(document.pointerLockElement)document.exitPointerLock();
-    atlas.open();
-    if(!atlas.entries.length)atlas.update([],null,profile(),slot);
-  }
-  if(refreshBusy)return;
-  refreshBusy=true;
-  try{
-    const data=await request('/world');
-    saves.online=true;
-    atlas.update(data.kingdoms,true,profile(),slot);
-  } catch {
-    saves.online=false;
-    atlas.update([],false,profile(),slot);
-  }finally{refreshBusy=false;}
-}
-
-async function publish() {
-  if(slot!=='own'||guest)return;
-  await connectProfile();
-  if(saves.conflicted)return;
-  const saved=await saves.save(state,{strict:true});
-  await request('/world',{method:'POST',payload:{revision:saved.revision}});
-  await mapUpdate();
-  tell('Seu reino está no mapa-múndi.');
+async function navigate(path) {
+  editor.cancel();
+  if(document.pointerLockElement)document.exitPointerLock();
+  if(!guest)await saves.save(state);
+  location.assign(path);
 }
 
 async function switchSlot(next) {
   if(slot===next){hud.popup.close();return;}
-  if(guest)leaveVisit();
+  if(guest)await leaveVisit();
   await saves.save(state);
   const replacement=await saves.load(next,saveKind(next));
   if(next==='backup'&&!saves.current){
@@ -140,22 +186,22 @@ async function switchSlot(next) {
   await saves.save(state);
 }
 
-async function visit(id) {
-  const record=await request('/world/'+id);
+async function visit(record) {
   const valid=validatedKingdom(record.state);
   if(!valid)throw new Error('O reino publicado tem um salvamento inválido.');
   await prepareModels(valid.objects);
-  if(!guest)await saves.save(state);
-  editor.cancel();editor.select(null);
   guest={state:valid,kingdom:record.kingdom};
-  atlas.dialog.close();hud.toggleCatalogue(false);
+  editor.start(valid,{readOnly:true});
+  hud.toggleCatalogue(false);
   cameraMode('orbit');view?.navigation.overview(valid);
   if(view) {view.navigation.position.set(-.6,0,9);view.navigation.yaw=0;}
   changed();hud.showVisit(guest.kingdom);
 }
 
-function leaveVisit() {
+async function leaveVisit() {
+  await prepareModels(state.objects);
   guest=null;
+  history.replaceState(null,'','/');
   editor.start(state);
   view?.traffic.showPlayers([]);
   cameraMode('orbit');
@@ -186,7 +232,7 @@ function firstGate() {
   if(!view||guest)return;
   if(editor.selected&&gates.has(editor.selected.type)){editor.toggleGate(editor.selected.id);return;}
   const point=view.navigation.position;
-  const gate=active().objects.filter(o=>gates.has(o.type)&&Math.hypot(o.x-point.x,o.z-point.z)<(castleTypes.has(o.type)?21:8))
+  const gate=[...active().objects,...waterGates(active())].filter(o=>gates.has(o.type)&&Math.hypot(o.x-point.x,o.z-point.z)<(castleTypes.has(o.type)?21:8))
     .sort((a,b)=>Math.hypot(a.x-point.x,a.z-point.z)-Math.hypot(b.x-point.x,b.z-point.z))[0];
   if(gate)editor.toggleGate(gate.id);
   else hud.notify('Aproxime-se de um portão.');
@@ -246,11 +292,40 @@ async function action(which,value) {
     case 'upgrade-walls':
     case 'upgrade-gate':
       if(!guest&&editor.selected){
-        const selected=editor.selected;
-        await prepareModels([{...selected,wallLevel:2}]);
-        if(editor.selected===selected)editor.upgradeFortification(which);
+        const selected=editor.selected,kingdom=state,upgrade=fortificationUpgrade(selected);
+        if(!upgrade)break;
+        if(state.gold<upgrade.cost){hud.notify('Moedas insuficientes.');break;}
+        const ready=!view||await loadFortificationKit(upgrade.level);
+        if(!guest&&state===kingdom&&editor.selected===selected){
+          if(ready)editor.upgradeFortification(which);
+          else hud.notify('O modelo da melhoria não carregou. Tente novamente.');
+        }
       }
       break;
+    case 'show-building-upgrade':
+      if(!guest&&editor.selected){
+        if(document.pointerLockElement)document.exitPointerLock();
+        hud.showBuildingUpgrade(editor.selected,state.gold);
+      }
+      break;
+    case 'upgrade-building': {
+      if(guest||editor.selected?.id!==value)return;
+      const selected=editor.selected,kingdom=state,upgrade=buildingUpgrade(selected);
+      if(!upgrade)return;
+      if(state.gold<upgrade.cost){hud.notify('Moedas insuficientes.');break;}
+      const ready=!view||await loadBuildingUpgrade(upgrade.object);
+      if(guest||state!==kingdom||editor.selected!==selected)break;
+      if(!ready){hud.notify('O modelo da melhoria não carregou. Tente novamente.');break;}
+      if(editor.apply({kind:'upgrade-building',id:value})){
+        hud.popup.close();
+        editor.select(value);
+        hud.notify(`Construção melhorada para o nível ${upgrade.level}.`);
+      }
+      break;
+    }
+    case 'missions': await openMissions(); break;
+    case 'mission-select': selectedMission=value;renderMissions();break;
+    case 'mission-claim': await claimMission(value);break;
     case 'fortifications':
       if(!guest&&state.objects.some(isVillageWall)){
         editor.cancel();
@@ -271,7 +346,7 @@ async function action(which,value) {
     }
     case 'gate': firstGate(); break;
     case 'clear-selection': editor.select(null); break;
-    case 'settings': hud.showSettings(active(),slot,profile(),saves.online,saves.conflicted); break;
+    case 'settings': hud.showSettings(active(),slot,saves.account,saves.online,saves.conflicted); break;
     case 'help': hud.showHelp(); break;
     case 'time': hud.showTime(active().time); break;
     case 'set-time':
@@ -312,54 +387,53 @@ async function action(which,value) {
       }
       break;
     }
-    case 'map': await mapUpdate(true); break;
-    case 'refresh-map': await mapUpdate(); break;
-    case 'access-code': atlas.accessCode(profile()?.token);break;
-    case 'recover-code': atlas.accessCode();break;
-    case 'access-back': atlas.update(atlas.entries,atlas.online,profile(),slot);break;
-    case 'focus-marker': atlas.focus(value); break;
-    case 'publish': await publish(); break;
-    case 'unpublish':
-      await request('/world',{method:'DELETE'});
-      await mapUpdate();tell('Seu reino saiu do mapa.');break;
-    case 'visit': await visit(value); break;
-    case 'leave': leaveVisit(); break;
+    case 'map': await navigate(guest ? '/mapa.html?reino='+encodeURIComponent(guest.kingdom.id) : '/mapa.html'); break;
+    case 'account': await navigate('/login.html'); break;
+    case 'leave': await leaveVisit(); break;
     case 'saves': hud.showSlots(slot);break;
     case 'slot': await switchSlot(value);break;
     case 'save':
       if(guest){tell('Você está visitando um reino publicado.');break;}
       await saves.save(state);tell('Salvamento atualizado.');break;
-    case 'resolve': showConflict(await request('/kingdom'));break;
+    case 'resolve': showConflict(await request('/kingdom',{account:saves.account}));break;
     case 'remote-version': {
-      const remote=await request('/kingdom');
+      const remote=await request('/kingdom',{account:saves.account});
       const next=upgradeStarter(await saves.useRemote(remote));
       await prepareModels(next.objects);
       state=next;
       editor.start(state);hud.popup.close();changed();break;
     }
     case 'local-version':
-      await saves.useLocal(await request('/kingdom'),state);
+      await saves.useLocal(await request('/kingdom',{account:saves.account}),state);
       hud.popup.close();changed();break;
     case 'walk': cameraMode(view?.navigation.mode==='walk'?'orbit':'walk');break;
     case 'free': hud.popup.close();cameraMode('free');break;
     case 'overview': cameraMode('orbit');view?.navigation.overview(active());if(hud.popup.open)hud.popup.close();break;
+    case 'focus-lake': {
+      if(!view)break;
+      cameraMode('free');
+      editor.cancel();editor.select(null);
+      const {x,z}=lakeCenter;
+      const scale=Math.max(1,.94/view.camera.aspect);
+      view.navigation.snap([x-15,0,z-6],[x-15+61*scale,99*scale,z-6+102*scale]);
+      break;
+    }
     case 'focus-castle': {
       const keep=active().objects.find(object=>castleTypes.has(object.type));
       if(!keep){hud.notify('Construa um castelo para enquadrá-lo.');break;}
-      cameraMode('orbit');view?.navigation.focusCastle(keep.x,keep.z);
-      if(!guest){editor.cancel();editor.select(keep.id);}
+      cameraMode('orbit');view?.focusCastle(keep);
+      editor.cancel();editor.select(keep.id);
       break;
     }
     case 'zoom-in': view?.navigation.zoom(.82);break;
     case 'zoom-out': view?.navigation.zoom(1.22);break;
     case 'close': hud.popup.close();break;
-    case 'close-atlas': atlas.dialog.close();break;
   }
 }
 
 function run(which,value) {
-  if(locked)return;
-  const asyncActions=['publish','unpublish','visit','slot','remote-version','local-version','save','item','buy-village-wall','upgrade-walls','upgrade-gate'];
+  if(locked||root.dataset.ready!=='true')return;
+  const asyncActions=['map','account','slot','leave','remote-version','local-version','save','item','buy-village-wall','upgrade-walls','upgrade-gate','upgrade-building','mission-claim'];
   locked=asyncActions.includes(which);
   action(which,value).catch(friendlyError).finally(()=>{if(asyncActions.includes(which))locked=false;});
 }
@@ -373,17 +447,6 @@ root.addEventListener('submit',async event=>{
     current.quality=form.get('quality');current.sound=form.has('sound');
     audio.set(current.sound).catch(()=>{});
     hud.popup.close();changed({modified:true});
-  } else if(['profile-form','recover-form'].includes(event.target.id)){
-    const form=new FormData(event.target);
-    locked=true;
-    try{
-      if(event.target.id==='profile-form')await register(form.get('alias').trim(),profile()?.token);
-      else await recoverProfile(form.get('code'));
-      await connectProfile();
-      if(!saves.conflicted&&slot==='own'&&!guest)await saves.save(state);
-      await mapUpdate();
-    } catch (error) {friendlyError(error);}
-    finally {locked=false;}
   }
 });
 root.addEventListener('pointerdown',()=>{if(active()?.sound)audio.set(true).catch(()=>{});},{capture:true});
@@ -406,11 +469,12 @@ if(view){
     if(now-lastAim<40)return;
     lastAim=now;
     const point=view.placeAt(event);
-    if(point)editor.aim(point);
+    if(point)editor.aim(point,false,editor.grading?view.pick(event,point,{foundationsOnly:true}):undefined);
   });
   canvas.addEventListener('pointerup',event=>{
     const from=pointerDown;pointerDown=null;
-    if(!from||event.button!==0||from.pointer!==event.pointerId||Math.hypot(from.x-event.clientX,from.y-event.clientY)>8||guest)return;
+    if(root.dataset.ready!=='true'||!from||event.button!==0||from.pointer!==event.pointerId||
+       Math.hypot(from.x-event.clientX,from.y-event.clientY)>8)return;
     if(hud.territoryOpen&&usesLots(state.territory)){
       const lot=view.pickExpansion(event);
       if(lot)action('preview-expansion',lot);
@@ -418,7 +482,7 @@ if(view){
     }
     if(editor.placement||editor.clearing){
       const point=view.placeAt(event);
-      if(point)editor.confirm(point);
+      if(point)editor.confirm(point,editor.grading?view.pick(event,point,{foundationsOnly:true}):undefined);
       return;
     }
     const id=view.pick(event);
@@ -449,7 +513,7 @@ if(view){
 
 document.addEventListener('keydown',event=>{
   if(event.key==='Escape'&&hud.territoryOpen&&usesLots(state?.territory)){hud.popup.close();return;}
-  if(!state||modalsOpen()||event.target.matches('input,textarea,select')||event.target.isContentEditable)return;
+  if(root.dataset.ready!=='true'||modalsOpen()||event.target.matches('input,textarea,select')||event.target.isContentEditable)return;
   const key=event.key.toLowerCase();
   if(key==='escape'){editor.cancel();editor.select(null);return;}
   if((event.ctrlKey||event.metaKey)&&key==='z'&&!guest){event.preventDefault();editor.undo();return;}
@@ -469,46 +533,65 @@ document.addEventListener('keydown',event=>{
   }
 });
 document.addEventListener('keyup',event=>view?.navigation.keys.delete(event.key.toLowerCase()));
-window.addEventListener('online',()=>connectProfile().then(ok=>{if(ok && !saves.conflicted&&!guest)saves.save(state);}));
+window.addEventListener('online',()=>{if(state)connectProfile().then(ok=>{if(ok && !saves.conflicted&&!guest)saves.save(state);});});
+window.addEventListener('pageshow',event=>{
+  if(event.persisted)refreshAccount().then(account=>{
+    if(account?.id!==saves.account?.id)location.reload();
+  }).catch(()=>{});
+});
 document.addEventListener('visibilitychange',()=>{
   if(document.hidden){audio.set(false);view?.navigation.keys.clear();}
   else if(active()?.sound)audio.set(true).catch(()=>{});
 });
 
 setInterval(()=>{
-  if(document.hidden||!state||guest)return;
+  if(document.hidden||root.dataset.ready!=='true'||guest)return;
   if(collectTax(state)){updateHUD();audio.harvest();saves.save(state);}
   else hud.tax(state);
 },1000);
 setInterval(async ()=>{
-  if(document.hidden || !guest || !view || !profile()) return;
+  if(document.hidden || !guest || !view || !saves.account || !saves.online) return;
   const id=guest.kingdom.id;
   const camera=view.navigation, foot=camera.position;
   try {
-    const {players}=await request('/world/'+id+'/presence',{method:'POST',payload:{x:foot.x,y:foot.y,z:foot.z,angle:Math.atan2(Math.sin(camera.yaw+Math.PI),Math.cos(camera.yaw+Math.PI))}});
+    const {players}=await request('/world/'+id+'/presence',{account:saves.account,method:'POST',payload:{x:foot.x,y:foot.y,z:foot.z,angle:Math.atan2(Math.sin(camera.yaw+Math.PI),Math.cos(camera.yaw+Math.PI))}});
     if(guest?.kingdom.id!==id)return;
     view.traffic.showPlayers(players);
     if(guest.count!==players.length){guest.count=players.length;hud.showVisit(guest.kingdom,players.length);}
   } catch {view.traffic.showPlayers([]);}
 },2200);
-setInterval(()=>{
-  if(atlas.dialog.open && profile() && !atlas.codeOpen && !document.hidden && !locked && !atlas.dialog.querySelector('.dialog-message'))mapUpdate();
-},12000);
 setInterval(async ()=>{
-  if(document.hidden||guest||!state||!profile()||slot!=='own'||saves.conflicted||locked)return;
+  if(document.hidden||guest||!state||!saves.account||slot!=='own'||saves.conflicted||locked)return;
   const ok=await connectProfile();
   if(ok&&saves.current?.pending&&!saves.conflicted)await saves.save(state);
 },18000);
 
 async function initialize() {
+  const destination=new URLSearchParams(location.search).get('visita');
+  const target=destination && /^(?:[a-f0-9-]{36}|npc-[a-z]+)$/.test(destination) ?
+    request('/world/'+destination,{account:null}).then(record=>({record}),error=>({error})) : null;
+  try { saves.account=await refreshAccount(); }
+  catch { saves.account=profile(); }
+  hud.account(saves.account);
+  progress=saves.account?missionProgress(saves.account.progress?.completed):guestMissions();
   const loaded=await saves.load(slot,saveKind(slot));
-  const initial=slot==='own'?upgradeStarter(loaded):loaded;
-  await prepareModels(initial.objects);
-  state=initial;
-  view?.navigation.overview(state);
-  editor.start(state);changed();hud.saved('Salvo neste navegador');
-  await connectProfile();
+  state=slot==='own'?upgradeStarter(loaded):loaded;
+  editor.start(state);hud.saved('Salvo neste navegador');
+  await connectProfile({render:false,notify:!target});
   if(!saves.conflicted)await saves.save(state);
+  if(target){
+    try {
+      const {record,error}=await target;
+      if(error)throw error;
+      await visit(record);
+    }
+    catch(error) { history.replaceState(null,'','/');friendlyError(error); }
+  }
+  if(!guest){
+    await prepareModels(state.objects);
+    view?.navigation.overview(state);
+    changed();
+  }
   root.dataset.ready='true';
 }
 initialize().catch(error=>{hud.notify('O reino não pôde ser carregado.');console.error(error);});

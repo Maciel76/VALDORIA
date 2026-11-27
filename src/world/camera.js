@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { supportHeightWrapper } from './walk.js';
-import { bounds,visibleTerrainHeight } from './terrain-data.js';
+import { bounds,terrainBounds,visibleTerrainHeight } from './terrain-data.js';
 import { footprint } from '../core/geometry.js';
 import { isPerimeterPiece,isVillageWall } from '../core/fortifications.js';
 import { villagePerimeterBounds } from './perimeter.js';
@@ -92,8 +92,18 @@ export class KingdomCamera {
     const dz=21*Math.cos(angle)-12*Math.sin(angle);
     this.snap([gate.x,y+2.2,gate.z],[gate.x+dx,y+14,gate.z+dz]);
   }
-  focusCastle(x,z) {
-    this.snap([x,2.75,z],[x+22,35,z+45]);
+  focusCastle(x,z,base=0,height=0,palaceRotation=null) {
+    const extra=Math.max(0,height-12);
+    const portrait=Math.max(1,1.03/this.camera.aspect);
+    if(palaceRotation!==null){
+      const angle=palaceRotation*Math.PI/2;
+      const front=[Math.sin(angle),Math.cos(angle)];
+      const side=20*portrait, distance=52*portrait;
+      this.snap([x+front[0]*2.1,base+height*.33,z+front[1]*2.1],
+        [x+front[1]*side+front[0]*distance,base+36*portrait,z-front[0]*side+front[1]*distance]);
+      return;
+    }
+    this.snap([x,base+2.75+extra*.45,z],[x+(22+extra*.25)*portrait,base+(35+extra*.7)*portrait,z+(45+extra*.6)*portrait]);
   }
   focusExpansion({minX,maxX,minZ,maxZ},state) {
     this.state=state;
@@ -136,7 +146,7 @@ export class KingdomCamera {
     const target=this.orbit.target;
     const desired=this.orbitCamera.position;
     if(this.state){
-      const edge=bounds(this.state.territory);
+      const edge=(this.mode==='free'?terrainBounds:bounds)(this.state.territory);
       const x=THREE.MathUtils.clamp(target.x,edge.minX-5,edge.maxX+5);
       const z=THREE.MathUtils.clamp(target.z,edge.minZ-5,edge.maxZ+5);
       desired.x+=x-target.x;

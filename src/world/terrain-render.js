@@ -1,10 +1,11 @@
 import { onVillagePerimeter } from './perimeter.js';
 import * as THREE from 'three';
 import { BAND,terrainBounds,inWater,insideTerritory,outsideOriginalTerritory,terrainHeight,landscapeCell,
-  ownedLandscapeCell,random,riverX,riverWidth,waterLevel,terrainBaseLevel,terrainCellSize,
-  riverSurfaceWidth,landscapeCellKey } from './terrain-data.js';
+  ownedLandscapeCell,random,waterDistance,waterSurface,waterLevel,terrainBaseLevel,terrainCellSize,
+  landscapeCellKey } from './terrain-data.js';
 import { group,cyl,ball } from '../models/kit.js';
 import { lotAt,lotRectangle,ownsLot,usesLots } from './lots.js';
+import { lakeChannels,lakeCenter } from './hydrology.js';
 
 const dummy=new THREE.Object3D(), color=new THREE.Color();
 export const turf=new THREE.MeshStandardMaterial({name:'grama do terreno',vertexColors:true,roughness:1});
@@ -23,7 +24,7 @@ const stone=ball(plantShape,'stone',0,0,0,1,1,1);
 function turfVertexColor(x,z,seed,target) {
   const variation=Math.sin(x*.075+z*.082)*.49+Math.sin(x*.26-z*.35)*.24+Math.cos(z*.62+x*.55)*.23;
   target.copy(moss[Math.max(0,Math.min(5,Math.floor((variation+1)*3)))]);
-  const distance=Math.abs(x-riverX(z,seed))-riverWidth(z)*.5;
+  const distance=waterDistance(x,z,seed);
   if(distance<6)target.lerp(dry,Math.min(.85,(6-distance)/9));
   if(inWater(x,z,seed))target.lerp(riverBed,.78);
 }
@@ -53,7 +54,7 @@ function vegetationAtEdge(point,edge) {
 
 function markingHeight(x,z,seed,territory) {
   const ground=terrainHeight(x,z,seed,territory);
-  const water=Math.abs(x-riverX(z,seed))<riverSurfaceWidth(z)?waterLevel:terrainBaseLevel;
+  const water=waterSurface(x,z,seed)?waterLevel:terrainBaseLevel;
   return Math.max(ground,water)+.28;
 }
 
@@ -149,7 +150,7 @@ function plantRegion(container,plants,seed,territory,detailSeed,removedLandscape
   container.updateMatrixWorld(true);
   return {visible,obstacleMeshes};
 }
-const waterMaterial = new THREE.MeshStandardMaterial({color:'#629f9c',roughness:.37,metalness:.13,
+const waterMaterial = new THREE.MeshStandardMaterial({color:'#508e91',roughness:.37,metalness:.13,
   transparent:true,opacity:.94,side:THREE.DoubleSide});
 const streamClock={value:0};
 waterMaterial.onBeforeCompile=shader=>{
@@ -157,35 +158,90 @@ waterMaterial.onBeforeCompile=shader=>{
   shader.vertexShader='varying vec3 streamPosition;\n'+shader.vertexShader.replace('#include <begin_vertex>',
     '#include <begin_vertex>\nstreamPosition=(modelMatrix*vec4(position,1.)).xyz;');
   shader.fragmentShader='varying vec3 streamPosition; uniform float streamClock;\n'+shader.fragmentShader.replace('#include <color_fragment>',
-    '#include <color_fragment>\nfloat wave=sin(streamPosition.z*1.1+sin(streamPosition.x*.37)+streamClock*.9);\nfloat streak=sin(streamPosition.z*.38+streamPosition.x*2.+streamClock*.45);\ndiffuseColor.rgb *= .94+.08*wave+.11*pow(max(0.,streak),7.);');
+    '#include <color_fragment>\nfloat wave=sin(streamPosition.z*.56+.72*sin(streamPosition.x*.42+streamPosition.z*.19)-streamClock*.7);\nfloat wind=sin(streamPosition.x*.59-streamPosition.z*.27+.7*sin(streamPosition.z*.31)+streamClock*.38);\ndiffuseColor.rgb *= .98+.037*wave+.026*wind;');
 };
-const foam = new THREE.MeshBasicMaterial({color:'#b1d0ad',transparent:true,opacity:.31,depthWrite:false});
-
-function river(scene,minZ,maxZ,seed) {
-  const vertices=[],indices=[];
-  const edge = [[],[]];
-  for(let z=minZ;z<=maxZ;z+=2){
-    const x=riverX(z,seed),w=riverSurfaceWidth(z);
-    const index=vertices.length/3;
-    vertices.push(x-w,waterLevel,z,x+w,waterLevel,z);
-    if(index>0)indices.push(index-2,index,index-1,index,index+1,index-1);
-    for(const [i,sign] of [-1,1].entries()) if(Math.round(z/2)%8<5){
-      const side=x+(w-.48)*sign;
-      const off=i*.025;
-      edge[i].push(side,waterLevel+.021+off,z,side+sign*.17,waterLevel+.021+off,z,side+.20,waterLevel+.021+off,z+1.9);
+// Clip the water plane to the same shoreline used by terrain and movement.
+function waterways(scene,minZ,maxZ,seed) {
+  const positions=[];
+  const row=z=>Array.from({length:78},(_,i)=>{
+    const x=24+i*2;
+    return {x,z,d:waterDistance(x,z,seed)-.85};
+  });
+  const triangle=(a,b,c)=>{
+    const corners=[a,b,c],polygon=[];
+    for(let i=0;i<3;i++){
+      const from=corners[i],to=corners[(i+1)%3];
+      if(from.d<=0)polygon.push(from);
+      if((from.d<=0)===(to.d<=0))continue;
+      const t=from.d/(from.d-to.d);
+      polygon.push({x:from.x+(to.x-from.x)*t,z:from.z+(to.z-from.z)*t});
     }
+    for(let i=1;i+1<polygon.length;i++){
+      for(const p of [polygon[0],polygon[i],polygon[i+1]])positions.push(p.x,waterLevel,p.z);
+    }
+  };
+  let previous=row(minZ);
+  for(let z=minZ+2;z<=maxZ;z+=2){
+    const current=row(z);
+    for(let i=1;i<current.length;i++){
+      const a=previous[i-1],b=previous[i],c=current[i-1],d=current[i];
+      if(Math.min(a.d,b.d,c.d,d.d)>0)continue;
+      triangle(a,c,b);
+      triangle(b,c,d);
+    }
+    previous=current;
   }
   const geometry=new THREE.BufferGeometry();
-  geometry.setAttribute('position',new THREE.Float32BufferAttribute(vertices,3));
-  geometry.setIndex(indices);geometry.computeVertexNormals();
-  const stream=new THREE.Mesh(geometry,waterMaterial);
-  stream.receiveShadow=true;
-  scene.add(stream);
-  for(const positions of edge){
-    const geometry=new THREE.BufferGeometry();
-    geometry.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));
-    scene.add(new THREE.Mesh(geometry,foam));
+  geometry.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));
+  geometry.computeVertexNormals();
+  const water=new THREE.Mesh(geometry,waterMaterial);
+  water.name='Rio, canais e lago';
+  water.receiveShadow=true;
+  scene.add(water);
+}
+
+const currentFoam=new THREE.MeshBasicMaterial({color:'#b1e7d6',transparent:true,opacity:.26,
+  depthWrite:false,side:THREE.DoubleSide});
+const currentGeometry=new THREE.BufferGeometry().setAttribute('position',new THREE.Float32BufferAttribute([
+  0,0,-.9, -.15,0,.16, 0,0,1.15,
+  0,0,-.9, 0,0,1.15,.15,0,.16,
+],3));
+
+function lakeCurrent(root,seed){
+  const [entrance,exit]=lakeChannels(seed);
+  const {x,z}=lakeCenter;
+  const path=[...entrance,[x-2,z-9],[x+3,z+3],[x+1,z+15],...exit];
+  let length=0;
+  const spans=path.slice(1).map(([bx,bz],i)=>{
+    const [ax,az]=path[i],dx=bx-ax,dz=bz-az;
+    const size=Math.hypot(dx,dz);
+    const span={ax,az,dx,dz,size,start:length};
+    length+=size;
+    return span;
+  });
+  const mesh=new THREE.InstancedMesh(currentGeometry,currentFoam,38);
+  mesh.name='Corrente do lago';
+  mesh.frustumCulled=false;
+  mesh.renderOrder=1;
+  mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  root.add(mesh);
+  return {mesh,spans,length};
+}
+
+function moveCurrent(current,time){
+  const {mesh,spans,length}=current;
+  for(let i=0;i<mesh.count;i++){
+    const distance=(i*length/mesh.count+time*1.75)%length;
+    const {ax,az,dx,dz,start,size}=spans.find(part=>distance<part.start+part.size);
+    const t=(distance-start)/size;
+    const spread=(i%5-2)*.62;
+    dummy.position.set(ax+dx*t-dz/size*spread,waterLevel+.025+i%3*.004,az+dz*t+dx/size*spread);
+    dummy.rotation.set(0,Math.atan2(dx,dz),0);
+    dummy.scale.set(.36+(i%3)*.18,1,.49+(i%4)*.16);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(i,dummy.matrix);
   }
+  mesh.instanceMatrix.needsUpdate=true;
 }
 
 export class Terrain {
@@ -243,7 +299,7 @@ export class Terrain {
     const groundCover=new Map(),rng=random(seed+719);
     for(let i=0;i<3050;i++){
       const x=(rng()-.5)*256,z=(rng()-.5)*239;
-      if(inWater(x,z,seed)||Math.abs(x-riverX(z,seed))<7)continue;
+      if(waterDistance(x,z,seed)<1)continue;
       if(Math.hypot(x,z)<60 && rng()<.55)continue;
       const scale=.15+rng()*.42,y=terrainHeight(x,z,seed,territory);
       const key=Math.floor(x/54)+','+Math.floor(z/54);
@@ -258,7 +314,9 @@ export class Terrain {
     const skirt=new THREE.Mesh(new THREE.PlaneGeometry(1600,1600),plain);
     skirt.rotation.x=-Math.PI/2;skirt.position.y=terrainBaseLevel;skirt.receiveShadow=true;
     root.add(skirt);
-    river(root,minZ-120,maxZ+120,seed);
+    waterways(root,minZ-120,maxZ+120,seed);
+    this.current=lakeCurrent(root,seed);
+    moveCurrent(this.current,0);
     this.border=outline(edge,seed,territory,'#f9dc97',.76);
     this.border.visible=false;root.add(this.border);
     this.waterSeed=seed;
@@ -349,10 +407,14 @@ export class Terrain {
     }
     return false;
   }
+  setLakeFlow(open) {
+    this.current.mesh.visible=open;
+  }
   animate(seconds) {
     streamClock.value=seconds;
+    if(this.current.mesh.visible)moveCurrent(this.current,seconds);
     waterMaterial.roughness=.37+Math.sin(seconds*.76+this.waterSeed)*.032;
-    foam.opacity=.28+Math.sin(seconds*.75)*.08;
+
   }
 }
 

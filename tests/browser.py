@@ -24,7 +24,8 @@ def server(uri="disabled"):
     env = {**os.environ, "PORT": str(port), "HOST": "127.0.0.1",
            "MONGODB_URI": uri, "MONGODB_DATABASE": database}
     address = f"http://127.0.0.1:{port}"
-    process = subprocess.Popen(["node", "server/index.js"], cwd=ROOT, env=env)
+    node = subprocess.check_output(["node", "-p", "process.execPath"], cwd=ROOT, text=True).strip()
+    process = subprocess.Popen([node, "server/index.js"], cwd=ROOT, env=env)
     try:
         for _ in range(70):
             try:
@@ -55,6 +56,7 @@ def open_page(browser, address, width=1060, height=720, mobile=False):
                                   reduced_motion="reduce", is_mobile=mobile,
                                   has_touch=mobile, ignore_https_errors=False)
     page = context.new_page()
+    page.clock.set_fixed_time(time.time() * 1000)
     page.set_default_timeout(18000)
     issues = []
 
@@ -86,7 +88,7 @@ def assert_catalogue_centered(page):
     assert abs(box["y"] + box["height"] / 2 - page.viewport_size["height"] / 2) <= 1
 
 
-def assert_radial_selection(page, name, count=4):
+def assert_radial_selection(page, name, count=5):
     selection = page.get_by_role("group", name=f"Ações para {name}", exact=True)
     expect(selection).to_be_visible()
     buttons = selection.get_by_role("button")
@@ -128,6 +130,13 @@ def assert_no_errors(issues):
 def offline(browser, address):
     context, page, issues = open_page(browser, address)
     expect(page.locator("#gold")).to_have_text("1.500")
+    expect(page.locator("#people")).to_have_text("12")
+    action(page, "missions", ".dock").click()
+    expect(page.locator("#mission-active-title")).to_have_text("A sede do reino")
+    action(page, "mission-claim", "#panel").click()
+    expect(page.locator(".mission-account strong")).to_have_text("Nível 2")
+    expect(page.locator("#mission-active-title")).to_have_text("Portas abertas")
+    action(page, "close", "#panel").click()
     starter = stored(page, "own")
     assert starter["territory"] == {"lots": []}
     assert [o["type"] for o in starter["objects"]] == ["stockade", "villageWall", "cityGate"]
@@ -175,6 +184,7 @@ def offline(browser, address):
     expect(page.locator("#catalogue")).not_to_be_visible()
     page.get_by_role("button", name="Enquadrar castelo").click()
     expect(page.locator("#selection h3")).to_have_text("Castelo Nível 1")
+    expect(page.locator("#selection .selection-residents")).to_contain_text("12 moradores")
     expect(action(page, "gate", "#selection")).to_have_text("Fechar portão")
     action(page, "gate", "#selection").click()
     expect(action(page, "gate", "#selection")).to_have_text("Abrir portão")
@@ -201,7 +211,7 @@ def offline(browser, address):
     expect(action(page, "move", "#selection")).to_have_count(0)
     action(page, "upgrade-walls", "#selection").click()
     expect(page.locator("#selection small")).to_have_text("Nível 2")
-    expect(action(page, "upgrade-walls", "#selection")).to_have_count(0)
+    expect(action(page, "upgrade-walls", "#selection")).to_contain_text("Nível 3")
     action(page, "fortifications", ".camera-tools").click()
     expect(page.locator('#panel [data-value="per-4"]')).to_contain_text("Nível 1")
     page.locator('#panel [data-value="per-4"]').click()
@@ -235,12 +245,14 @@ def offline(browser, address):
     expect(catalogue_button).to_have_attribute("aria-expanded", "false")
     catalogue_button.click()
     page.locator('[data-category="housing"]').click()
-    page.locator('[data-item="hut"]').click()
+    hut = page.locator('[data-item="hut"]')
+    expect(hut).to_contain_text("3 moradores")
+    hut.click()
     expect(page.locator("#catalogue")).not_to_be_visible()
     expect(page.locator("#placement")).to_be_visible()
     expect(action(page, "confirm", "#placement")).to_have_count(0)
+    expect(action(page, "repeat", "#placement")).to_have_attribute("aria-pressed", "true")
     action(page, "rotate", "#placement").click()
-    action(page, "repeat", "#placement").click()
     page.mouse.move(530, 360)
     page.mouse.down()
     page.mouse.move(580, 360, steps=3)
@@ -254,7 +266,15 @@ def offline(browser, address):
     page.mouse.click(530, 360)
     expect(page.locator("#toast")).to_have_text("A área está ocupada.")
     expect(page.locator("#gold")).to_have_text("4.890")
-    action(page, "cancel", "#placement").click()
+    page.mouse.click(650, 360)
+    expect(page.locator("#gold")).to_have_text("4.780")
+    expect(page.locator("#people")).to_have_text("6")
+    expect(page.locator("#catalogue")).not_to_be_visible()
+    expect(page.locator("#placement")).to_be_visible()
+    page.keyboard.press("Escape")
+    expect(page.locator("#placement")).not_to_be_visible()
+    action(page, "undo", ".dock").click()
+    expect(page.locator("#gold")).to_have_text("4.890")
     page.wait_for_function("""
       async () => {
         const db = await new Promise(resolve => {
@@ -271,7 +291,15 @@ def offline(browser, address):
 
     page.mouse.click(530, 360)
     x, y = assert_radial_selection(page, "Casebre de palha")
+    expect(page.locator("#selection .selection-residents")).to_contain_text("3 moradores")
     assert hypot(x-530, y-360) < 55
+    action(page, "show-building-upgrade", "#selection").click()
+    expect(page.locator(".upgrade-effects")).to_contain_text("3 → 4")
+    action(page, "upgrade-building", "#panel").click()
+    expect(page.locator("#people")).to_have_text("4")
+    expect(page.locator("#selection .selection-residents")).to_contain_text("Nível 2")
+    action(page, "undo", ".dock").click()
+    expect(page.locator("#people")).to_have_text("3")
     page.mouse.move(795, 270)
     page.mouse.down(button="right")
     page.mouse.move(870, 310, steps=4)
@@ -347,48 +375,81 @@ def offline(browser, address):
     action(page, "walk", ".dock").click()
     expect(page.locator("#crosshair")).to_be_visible()
     action(page, "map", ".dock").click()
-    expect(page.get_by_text("O servidor multiplayer está indisponível.", exact=False)).to_be_visible()
+    expect(page.get_by_text("O servidor está indisponível.", exact=False)).to_be_visible()
+    expect(page.locator(".map-pin.npc")).to_have_count(5)
     assert_no_errors(issues)
     context.close()
     print("OK navegador sem MongoDB: construção, movimentação, linha, rotação, desfazer, expansão, IndexedDB e câmera.")
 
 
-def enter_and_publish(page, alias, realm):
+def register_kingdom(page, alias, username, realm):
     action(page, "settings", ".game-tools").click()
     page.get_by_label("Nome do reino").fill(realm)
     page.get_by_role("button", name="Aplicar").click()
-    action(page, "map", ".dock").click()
+    action(page, "account", ".game-tools").click()
+    page.wait_for_url("**/login.html")
+    page.get_by_role("button", name="Criar conta", exact=True).click()
     page.get_by_label("Nome do jogador").fill(alias)
-    page.locator("#profile-form button").click()
-    expect(page.get_by_text(alias, exact=True)).to_be_visible()
-    action(page, "publish", "#atlas").click()
-    expect(page.get_by_text("Seu reino está no mapa-múndi.")).to_be_visible(timeout=18000)
+    page.get_by_label("Usuário").fill(username)
+    page.get_by_label("Senha", exact=True).fill("senha-para-" + username)
+    page.get_by_role("button", name="Criar minha conta").click()
+    page.locator("#app[data-ready=true]").wait_for(timeout=45000)
+    action(page, "map", ".dock").click()
+    page.wait_for_url("**/mapa.html")
     expect(page.locator(".map-pin.mine")).to_have_count(1)
+    expect(page.get_by_role("link", name=f"Visitar {realm}")).to_be_visible()
+    assert not page.evaluate("performance.getEntriesByType('resource').some(e => /three-.*\\.js/.test(e.name))")
 
 
 def multiplayer(browser, address):
     first, aria, errors_a = open_page(browser, address, 930, 660)
-    enter_and_publish(aria, "Aria do Vale", "Castelo de Aria")
+    register_kingdom(aria, "Aria do Vale", "aria", "Castelo de Aria")
     second, ulric, errors_b = open_page(browser, address, 930, 660)
-    enter_and_publish(ulric, "Ulric da Serra", "Castelo de Ulric")
+    register_kingdom(ulric, "Ulric da Serra", "ulric", "Castelo de Ulric")
+    expect(ulric.locator(".map-pin.npc")).to_have_count(5)
+    ulric.get_by_role("button", name="Jogadores").click()
     expect(ulric.locator(".map-pin")).to_have_count(2)
+    ulric.get_by_role("button", name="Ocultar meu reino").click()
+    expect(ulric.locator(".map-pin.mine")).to_have_count(0)
+    ulric.get_by_role("button", name="Mostrar meu reino").click()
+    expect(ulric.locator(".map-pin.mine")).to_have_count(1)
     ulric.locator("#atlas-search").fill("Aria")
     expect(ulric.locator(".map-pin")).to_have_count(1)
-    ulric.get_by_role("button", name="Visitar Castelo de Aria").click()
-    expect(ulric.locator("#visit strong")).to_have_text("Castelo de Aria")
+    ulric.locator(".map-pin").click()
+    expect(ulric.locator(".realm-card.active")).to_contain_text("Castelo de Aria")
+    ulric.get_by_role("link", name="Visitar Castelo de Aria").click()
+    expect(ulric.locator("#visit strong")).to_have_text("Castelo de Aria", timeout=30000)
     expect(action(ulric, "catalogue", ".dock")).to_be_disabled()
-    aria.get_by_role("button", name="Visitar Castelo de Aria").click()
-    expect(aria.locator("#visit strong")).to_have_text("Castelo de Aria")
+    aria.get_by_role("link", name="Visitar Castelo de Aria").click()
+    expect(aria.locator("#visit strong")).to_have_text("Castelo de Aria", timeout=30000)
     expect(aria.locator("#visit")).to_contain_text("1 visitante", timeout=30000)
     expect(ulric.locator("#visit")).to_contain_text("1 visitante", timeout=30000)
     action(ulric, "leave", "#visit").click()
     expect(ulric.locator("#visit")).not_to_be_visible()
     expect(action(ulric, "catalogue", ".dock")).to_be_enabled()
+    action(ulric, "map", ".dock").click()
+    ulric.get_by_role("button", name="NPCs").click()
+    ulric.get_by_role("link", name="Visitar Bastião do Grifo").click()
+    expect(ulric.locator("#visit")).to_contain_text("NPC", timeout=30000)
+    expect(ulric.locator("#visit strong")).to_have_text("Bastião do Grifo")
+    ulric.get_by_role("button", name="Enquadrar castelo").click()
+    expect(ulric.locator("#selection .selection-residents")).to_contain_text("30 moradores")
+    expect(ulric.locator("#selection button")).to_have_count(1)
+    action(ulric, "account", ".game-tools").click()
+    ulric.get_by_role("button", name="Sair da conta").click()
+    expect(ulric.get_by_text("Você saiu da conta.")).to_be_visible()
+    assert ulric.context.cookies() == []
+    ulric.get_by_label("Usuário").fill("ulric")
+    ulric.get_by_label("Senha", exact=True).fill("senha-para-ulric")
+    ulric.get_by_role("button", name="Entrar", exact=True).last.click()
+    ulric.locator("#app[data-ready=true]").wait_for(timeout=45000)
+    action(ulric, "settings", ".game-tools").click()
+    expect(ulric.get_by_label("Nome do reino")).to_have_value("Castelo de Ulric")
     assert_no_errors(errors_a)
     assert_no_errors(errors_b)
     first.close()
     second.close()
-    print("OK multiplayer: dois perfis, dois castelos, busca, visitas e presença simultânea.")
+    print("OK multiplayer: cadastro, login, mapa automático, visibilidade, miniaturas, NPCs e presença simultânea.")
 
 
 def mobile_layout(browser, address):
@@ -405,7 +466,13 @@ def mobile_layout(browser, address):
     expect(page.locator("#catalogue")).not_to_be_visible()
     page.touchscreen.tap(195, 422)
     expect(page.locator("#gold")).to_have_text("4.890")
+    page.touchscreen.tap(275, 422)
+    expect(page.locator("#gold")).to_have_text("4.780")
+    expect(page.locator("#placement")).to_be_visible()
+    action(page, "cancel", "#placement").tap()
     expect(page.locator("#placement")).not_to_be_visible()
+    action(page, "undo", ".dock").tap()
+    expect(page.locator("#gold")).to_have_text("4.890")
     page.touchscreen.tap(195, 422)
     x, y = assert_radial_selection(page, "Casebre de palha")
     assert hypot(x-195, y-422) < 55
@@ -431,8 +498,7 @@ def mobile_layout(browser, address):
 
 def main():
     with sync_playwright() as playwright:
-        options = {"headless": True, "args": ["--use-gl=angle", "--use-angle=swiftshader",
-                                              "--enable-unsafe-swiftshader"]}
+        options = {"headless": True, "args": ["--enable-unsafe-swiftshader"]}
         channel = os.getenv("VALDORIA_BROWSER_CHANNEL")
         if channel:
             options["channel"] = channel

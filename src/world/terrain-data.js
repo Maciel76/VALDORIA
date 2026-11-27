@@ -1,4 +1,6 @@
 import { availableLots,lotBounds,lotRectangle,ownsLotRectangle,usesLots } from './lots.js';
+import { lakeIntake,riverX,waterDistance,waterLevel,waterSurface } from './hydrology.js';
+export { inWater,riverX,riverWidth,riverSurfaceWidth,waterLevel,waterDistance,waterSurface } from './hydrology.js';
 
 export const BASE = 180;
 export const BAND = 36;
@@ -7,13 +9,8 @@ const landscapeSamples = 44;
 const originalCellRadius = BASE / BAND;
 export const MAX_NATURAL_OBSTACLES = (originalCellRadius * 2) ** 2 * landscapeSamples;
 export const directions = ['north', 'east', 'south', 'west'];
-export const riverX = (z, seed) => 59 + Math.sin(z / 62 + seed % 11 * 0.15) * 16 + Math.sin(z / 22) * 3.8;
-export const riverWidth = z => 11.5 + 2 * Math.cos(z / 33);
-export const inWater = (x,z,seed) => Math.abs(x-riverX(z,seed)) < riverWidth(z) * .47;
-export const waterLevel = -1.05;
 export const terrainBaseLevel = -3.7;
 export const terrainCellSize = 3;
-export const riverSurfaceWidth = z => riverWidth(z)*.54;
 export const bounds = territory => usesLots(territory)?lotBounds(territory):({
   minX: -BASE - BAND * territory.west, maxX: BASE + BAND * territory.east,
   minZ: -BASE - BAND * territory.north, maxZ: BASE + BAND * territory.south
@@ -63,8 +60,10 @@ function reliefScale(x,z,territory) {
 }
 
 export function terrainHeight(x,z,seed,territory) {
-  const distance = Math.abs(x - riverX(z,seed)) - riverWidth(z) * .47;
-  const edge = Math.min(1, Math.max(0,(distance+2)/10));
+  const distance = waterDistance(x,z,seed);
+  const t = Math.min(1, Math.max(0,(distance+1)/9));
+  const edge = t*t*(3-2*t);
+  const bed = -2.5+.8*Math.min(1,Math.max(0,distance/7))-.9*Math.min(1,Math.max(0,-distance/12));
   const relief = reliefScale(x,z,territory);
   if (relief === 0 && edge === 1) return 0;
 
@@ -72,7 +71,7 @@ export function terrainHeight(x,z,seed,territory) {
   const rolling = (Math.sin((x + seed % 51) / 33) * 6.8 + Math.cos((z - seed % 37) / 31) * 5.5 +
     Math.sin((x + z) / 19) * 2.2 + Math.cos((z - x) / 62) * 4 + 6) * heart;
   const small = Math.sin(x / 13) * Math.cos(z / 21) * .34;
-  return (-2.5 + Math.min(1, Math.max(0, distance / 7)) * .8) * (1-edge) + (rolling+small) * edge * relief;
+  return bed*(1-edge)+(rolling+small)*edge*relief;
 }
 
 export function landHeight(x,z,seed,territory) {
@@ -92,7 +91,7 @@ export function visibleTerrainHeight(x,z,seed,territory) {
   const edge=terrainBounds(territory);
   const px=Math.min(edge.maxX,Math.max(edge.minX,x));
   const pz=Math.min(edge.maxZ,Math.max(edge.minZ,z));
-  const water=Math.abs(px-riverX(pz,seed))<riverSurfaceWidth(pz)?waterLevel:-Infinity;
+  const water=waterSurface(px,pz,seed)?waterLevel:-Infinity;
   return Math.max(landHeight(px,pz,seed,territory),water);
 }
 
@@ -127,14 +126,16 @@ export function random(seed) {
   };
 }
 
-export function landscapeCell(cx,cz,seed) {
+export function landscapeCell(cx,cz,seed,includeFlooded=false) {
   const rng = random(seed + cx * 9941 + cz * 14971);
   const points = [];
   for (let i=0; i<landscapeSamples; i++) {
     const x = cx*BAND + rng()*BAND, z = cz*BAND + rng()*BAND;
     const chance = rng(), variation = rng(), yaw = rng()*Math.PI*2;
     const far = Math.hypot(x*.86,z);
-    if (inWater(x,z,seed) || Math.abs(x-riverX(z,seed)) < 9) continue;
+    const sluiceApproach=Math.abs(x-lakeIntake.x)<7&&Math.abs(z-lakeIntake.z)<11;
+    if (Math.abs(x-riverX(z,seed))<9 ||
+        (!includeFlooded&&(sluiceApproach||waterDistance(x,z,seed)<1.55))) continue;
     const id=`${cx},${cz}:${i}`;
     if (far > 55 && chance < (far > 98 ? .61 : .25)) {
       const size = 0.65 + variation * 1.1;
@@ -152,7 +153,7 @@ export function naturalObstacle(id,seed) {
   if (typeof id!=='string' || !/^-?\d,-?\d:\d{1,2}$/.test(id)) return null;
   const [cx,cz]=landscapeCellKey(id).split(',').map(Number);
   if ([cx,cz].some(value=>value < -originalCellRadius || value >= originalCellRadius)) return null;
-  return landscapeCell(cx,cz,seed).find(point=>point.id===id) ?? null;
+  return landscapeCell(cx,cz,seed,true).find(point=>point.id===id) ?? null;
 }
 
 export function ownedLandscapeCell(cx,cz,seed,edge) {

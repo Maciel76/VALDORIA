@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="pt-BR" class="portal">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="theme-color" content="#26352b">
+    <title>Mapa-múndi | Reino de Valdória</title>
+    <link rel="icon" href="/crest.svg" type="image/svg+xml">
+  </head>
+  <body>
+    <header class="portal-bar">
+      <a class="portal-brand" href="/"><img src="/crest.svg" alt="" width="31" height="36"> Reino de Valdória</a>
+      <nav aria-label="Jogo e conta">
+        <a class="bar-link" href="/">Voltar ao meu reino</a>
+        <a class="bar-link" id="map-account" href="/login.html?voltar=mapa">Entrar</a>
+      </nav>
+    </header>
+    <main id="atlas" class="atlas-page" aria-labelledby="atlas-title">
+      <header class="atlas-title">
+        <div><h1 id="atlas-title">Mapa-múndi</h1><p>Encontre castelos e visite outros reinos em Valdória.</p></div>
+        <span id="world-status" class="world-status" role="status" data-online="loading">Carregando mapa</span>
+      </header>
+      <div class="atlas-content">
+        <section class="atlas-chart" aria-label="Mapa dos castelos">
+          <div class="atlas-map">
+            <canvas aria-hidden="true"></canvas>
+            <div class="map-markers"></div>
+          </div>
+          <div class="map-key" aria-label="Legenda">
+            <span><i></i> Jogador</span><span><i class="npc"></i> NPC</span><span><i class="mine"></i> Meu reino</span>
+          </div>
+        </section>
+        <section class="atlas-directory" aria-labelledby="directory-title">
+          <div class="directory-heading"><h2 id="directory-title">Reinos</h2><button type="button" id="refresh-map" class="portal-button icon-button" aria-label="Atualizar mapa" title="Atualizar mapa"></button></div>
+          <label class="atlas-search"><span>Buscar reino ou jogador</span><input id="atlas-search" type="search" placeholder="Nome do reino ou jogador"></label>
+          <div class="atlas-filters" role="group" aria-label="Filtrar castelos">
+            <button type="button" data-kind="all" aria-pressed="true">Todos</button>
+            <button type="button" data-kind="player" aria-pressed="false">Jogadores</button>
+            <button type="button" data-kind="npc" aria-pressed="false">NPCs</button>
+          </div>
+          <div class="atlas-list"></div>
+          <div class="world-actions"></div>
+          <p id="atlas-message" class="portal-message" role="status" hidden></p>
+        </section>
+      </div>
+    </main>
+    <script type="module" src="/src/map-page.js"></script>
+  </body>
+</html>

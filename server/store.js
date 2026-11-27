@@ -1,17 +1,33 @@
 import { MongoClient } from 'mongodb';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { catalogue } from '../src/core/catalog.js';
+import { castleTypes } from '../src/core/geometry.js';
+import { isPerimeterPiece } from '../src/world/perimeter.js';
+import { onAtlasLand } from '../src/world/atlas-geography.js';
 
 export const digest = token => createHash('sha256').update(token).digest('hex');
+const towers = ['squareTower','roundTower'];
+const previewPriority = ['keep','stockade',...towers];
+const findPreview = types => previewPriority.find(type=>types.includes(type)) || 'flag';
 
 export function worldSummary({ _id, alias, published }) {
-  const seed = Number.parseInt(digest(_id).slice(0,12),16);
-  // Each account occupies a stable inland point on one of the atlas islands.
-  const a = (seed % 1024)/1024*Math.PI*2;
-  const r = Math.sqrt((Math.floor(seed/1024)%4096)/4096);
-  const island = Math.floor(seed/4194304)%3;
-  const [cx,cy,rx,ry] = [[.44,.49,.255,.285],[.775,.59,.074,.16],[.22,.30,.069,.075]][island];
-  return { id: _id, alias, name: published.name, x:cx+Math.cos(a)*r*rx,y:cy+Math.sin(a)*r*ry,
-    castles:published.castles, buildings:published.buildings, updatedAt:published.at };
+  let x, y, attempt = 0;
+  do {
+    const hash = digest(_id+':'+attempt++);
+    x = .14 + Number.parseInt(hash.slice(0,6),16)/0xffffff*.73;
+    y = .19 + Number.parseInt(hash.slice(6,12),16)/0xffffff*.60;
+  } while (!onAtlasLand(x,y));
+  const preview = published.preview ?? findPreview(published.state?.objects.map(object=>object.type) || []);
+  return {id:_id,alias,name:published.name,x,y,kind:'player',preview,
+    castles:published.castles,buildings:published.buildings,updatedAt:published.at};
+}
+
+export function kingdomSnapshot(state) {
+  const castles = state.objects.filter(object=>!isPerimeterPiece(object) &&
+    (castleTypes.has(object.type) || towers.includes(object.type)));
+  const preview = findPreview(castles.map(object=>object.type));
+  const buildings = state.objects.filter(({type})=>['housing','trade','civic','castle'].includes(catalogue[type].category)).length;
+  return {name:state.name,castles:castles.length,buildings,preview,at:Date.now(),state};
 }
 
 export function createStore(env) {
@@ -23,7 +39,12 @@ export function createStore(env) {
     if (collection) return collection;
     pending ||= client.connect().then(async () => {
       const result = client.db(env.MONGODB_DATABASE || 'reino_valdoria').collection('kingdoms');
-      await result.createIndex({ key:1 },{ unique:true });
+      await result.createIndexes([
+        {key:{key:1},name:'key_1',unique:true},
+        {key:{username:1},name:'username_unique',unique:true,partialFilterExpression:{username:{$exists:true}}},
+        {key:{'sessions.key':1},name:'session_key'},
+        {key:{'published.at':-1,_id:1},name:'atlas_recent'}
+      ]);
       return collection = result;
     }).catch(()=>{
       retryAt = Date.now()+4000;
@@ -33,8 +54,42 @@ export function createStore(env) {
   }
   return {
     getCollection,
+    async world(db) {
+      const legacyPreview = {$switch:{
+        branches:previewPriority.map(type=>({
+          case:{$in:[type,{$ifNull:['$published.state.objects.type',[]]}]},then:type
+        })),
+        default:'flag'
+      }};
+      return db.aggregate([
+        {$match:{published:{$exists:true}}},
+        {$sort:{'published.at':-1,_id:1}},
+        {$limit:300},
+        {$project:{alias:1,published:{name:'$published.name',castles:'$published.castles',buildings:'$published.buildings',
+          at:'$published.at',preview:{$ifNull:['$published.preview',legacyPreview]}}}}
+      ]).toArray();
+    },
     async close() { if (client) await client.close(); },
-    async profile(db,token) { return db.findOne({key:digest(token)}); },
+    async profile(db,token) { return db.findOne({key:digest(token),username:{$exists:false}}); },
+    async sessionProfile(db,key) {
+      return db.findOne({sessions:{$elemMatch:{key,expiresAt:{$gt:Date.now()}}}});
+    },
+    async revokeSession(db,key) { await db.updateOne({'sessions.key':key},{$pull:{sessions:{key}}}); },
+    async startSession(db,id,session) {
+      return db.findOneAndUpdate({_id:id},{$push:{sessions:{$each:[session],$slice:-12}}},{returnDocument:'after'});
+    },
+    async createAccount(db,{username,alias,password,session,legacyCode}) {
+      const account = {username,alias,password,sessions:[session],key:digest(randomBytes(24).toString('hex'))};
+      if (legacyCode) {
+        return db.findOneAndUpdate({key:digest(legacyCode),username:{$exists:false}},[
+          {$set:{...Object.fromEntries(Object.entries(account).map(([key,value])=>[key,{$literal:value}])),
+            discoverable:{$ifNull:['$discoverable',{$ne:[{$type:'$published'},'missing']}]}}}
+        ],{returnDocument:'after'});
+      }
+      const profile = {...account,_id:randomUUID(),revision:0,operations:[],discoverable:true};
+      await db.insertOne(profile);
+      return profile;
+    },
     async register(db,token,alias) {
       return db.findOneAndUpdate({key:digest(token)},{$setOnInsert:{
         _id:randomUUID(),key:digest(token),alias,revision:0,operations:[]
@@ -45,10 +100,11 @@ export function createStore(env) {
       if (previous) return {revision:previous.revision, duplicate:true};
       if (revision!==profile.revision) return {conflict:profile.revision};
       const next = revision+1;
-      const update = await db.findOneAndUpdate({_id:profile._id,revision},{
-        $set:{state,revision:next,updatedAt:Date.now()},
-        $push:{operations:{$each:[{id:operation,revision:next}],$slice:-32}}
-      },{returnDocument:'after',projection:{revision:1}});
+      const update = await db.findOneAndUpdate({_id:profile._id,revision},[
+        {$set:{state:{$literal:state},revision:next,updatedAt:Date.now(),
+          operations:{$slice:[{$concatArrays:[{$ifNull:['$operations',[]]},[{id:operation,revision:next}]]},-32]},
+          published:{$cond:[{$eq:['$discoverable',true]},{$literal:kingdomSnapshot(state)},'$published']}}}
+      ],{returnDocument:'after',projection:{revision:1}});
       if (update) return {revision:update.revision};
       const latest = await db.findOne({_id:profile._id},{projection:{revision:1,operations:1}});
       const committed = latest.operations.find(record=>record.id===operation);

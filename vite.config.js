@@ -15,7 +15,10 @@ export default defineConfig(({ mode }) => {
     }],
     build: {
       chunkSizeWarningLimit: 800,
-      rolldownOptions: { output: { codeSplitting: { groups: [{ name:'three', test:/node_modules[\\/]three[\\/]/ }] } } }
+      rolldownOptions: {
+        input: { game:'index.html', atlas:'mapa.html', login:'login.html' },
+        output: { codeSplitting: { groups: [{ name:'three', test:/node_modules[\\/]three[\\/]/ }] } }
+      }
     }
   };
 });
