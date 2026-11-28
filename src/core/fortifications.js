@@ -1,3 +1,5 @@
+import { configuredBuildingLevel, fixedLevelCosts } from './economy-rules.js';
+
 export const villageWallId = 'village-wall';
 export const villageGateNames = {'per-4':'Portão sul','per-5':'Portão leste','per-6':'Portão oeste'};
 export const MAX_FORTIFICATION_LEVEL = 10;
@@ -23,13 +25,17 @@ export function fortificationRole(object) {
 export const fortificationLevel = object => object.wallLevel ?? 1;
 export const maxFortificationLevel = object => fortificationRole(object)==='castle'?2:MAX_FORTIFICATION_LEVEL;
 
+export function defaultFortificationUpgradeCost(type,level) {
+  const upgrades=level-1;
+  return Math.ceil(fixedLevelCosts[type]*(1+.65*upgrades+.08*upgrades**2));
+}
+
 export function fortificationUpgradeCost(object) {
   const role=fortificationRole(object);
   const level=fortificationLevel(object);
-  const base=role==='village-wall'?850:isVillageGate(object)?250:role==='castle'?450:object.type==='palisade'?36:null;
-  if(base===null||level>=maxFortificationLevel(object))return null;
-  const upgrades=level-1;
-  return Math.ceil(base*(1+.65*upgrades+.08*upgrades**2));
+  if(!role||!Object.hasOwn(fixedLevelCosts,object.type)||
+     (object.type==='cityGate'&&!isVillageGate(object))||level>=maxFortificationLevel(object))return null;
+  return configuredBuildingLevel(object.type,level+1)?.cost??defaultFortificationUpgradeCost(object.type,level);
 }
 
 export function fortificationUpgrade(object){

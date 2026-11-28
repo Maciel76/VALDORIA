@@ -1,4 +1,5 @@
 import { catalogue,terrainPaving } from './catalog.js';
+import { constructionCost } from './economy-rules.js';
 import { isPerimeterPiece,isVillageWall } from './fortifications.js';
 import { buildingLevel } from './building-levels.js';
 import farmLayouts from './farm-layouts.json' with {type:'json'};
@@ -481,6 +482,6 @@ export function getLineCandidate(state, item, points, {moving,...options}={}) {
     failures.push(reason);
     if (!reason) staged.push(candidate);
   }
-  return { staged, failures, total: points.length * item.price };
+  return { staged, failures, total: points.length * constructionCost(item.id) };
 }
 

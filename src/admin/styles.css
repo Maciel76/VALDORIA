@@ -1,0 +1,64 @@
+:root { color-scheme: light; color:#182e29; background:#e9eeea; font: 15px "DM Sans Variable", sans-serif; --green:#183b33; --light:#f8faf8; --line:#cbd5ce; --muted:#51645b; }
+* { box-sizing:border-box; }
+body { margin:0; }
+a { color:inherit; }
+button,input,select { font:inherit; }
+button, input, select { border:1px solid #aebfb4; border-radius:5px; padding:.62rem .8rem; background:#fff; color:inherit; }
+button { cursor:pointer; font-weight:650; }
+button:hover:not(:disabled) { background:#edf3ee; }
+button:disabled { opacity:.5; cursor:default; }
+:focus-visible { outline:3px solid #a55924; outline-offset:3px; }
+.primary { color:white; background:#275447; border-color:#275447; }
+.primary:hover:not(:disabled) { background:#183b33; }
+h1,h2,legend,.brand { font-family:"Crimson Pro Variable",Georgia,serif; }
+h1 { font-size:clamp(2.3rem,5vw,3.8rem); font-weight:630; line-height:1; margin:0; }
+h2 { font-size:2rem; margin:0; line-height:1.02; }
+.header { min-height:72px; background:#18352e; color:#f2f5ef; display:flex; align-items:center; justify-content:space-between; padding:.7rem clamp(1rem,4vw,3.4rem); gap:1rem; border-bottom:3px solid #b69763; }
+.brand,.header-tools { display:flex; align-items:center; gap:.8rem; }
+.brand { text-decoration:none; font-size:2rem; }
+.header button { border-color:#617b70; color:inherit; background:transparent; }
+.header button:hover:not(:disabled) { background:#2c4c42; }
+.game-link { font-weight:650; text-underline-offset:.23em; font-size:.91rem; }
+.shell { display:grid; grid-template-columns:216px minmax(0,1fr); gap:clamp(1.2rem,3vw,3.2rem); max-width:1510px; margin:auto; padding:clamp(1rem,3.5vw,3.5rem); }
+aside { padding-top:1.18rem; }
+nav { display:grid; gap:.38rem; }
+nav button { text-align:left; background:transparent; border-color:transparent; width:100%; }
+nav button[aria-current] { background:#d4e5db; box-shadow:inset 3px 0 #315c4d; }
+.revision { padding:.95rem .8rem; color:var(--muted); font-size:.9rem; }
+.workspace { min-width:0; }
+.toolbar,.level-header { display:flex; justify-content:space-between; align-items:center; gap:1rem; flex-wrap:wrap; }
+.actions { display:flex; flex-wrap:wrap; gap:.48rem; }
+#status { min-height:1.55rem; color:#2d624d; font-weight:600; margin:.6rem 0; }
+#status[data-error="true"] { color:#983b27; }
+fieldset { min-width:0; border:1px solid var(--line); padding:1rem; margin:0 0 .9rem; background:var(--light); }
+legend { padding:0 .4rem; color:#294c3e; font-size:1.45rem; font-weight:680; }
+.form-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,155px),1fr)); gap:1rem; }
+label { display:grid; gap:.34rem; color:#30483f; font-weight:620; min-width:0; }
+label input,label select { width:100%; font-weight:480; }
+.checkbox { display:flex; align-items:center; font-weight:560; align-self:end; padding:.6rem 0; }
+.checkbox input { width:1em; accent-color:var(--green); }
+.ledger { display:grid; grid-template-columns:minmax(185px,.38fr) minmax(0,1fr); gap:clamp(.9rem,2vw,1.8rem); }
+.directory { display:grid; gap:.7rem; align-content:start; }
+.building-list { border-top:1px solid var(--line); overflow:auto; max-height:57vh; }
+.building-list button { border-radius:0; border:0; border-bottom:1px solid var(--line); width:100%; display:flex; justify-content:space-between; gap:.5rem; text-align:left; background:transparent; align-items:baseline; }
+.building-list button[aria-pressed="true"] { background:#d4e5db; }
+small,.hint,.empty { color:var(--muted); }
+.building-list small { white-space:nowrap; font-weight:500; }
+.levels .hint { margin:.55rem 0 1.1rem; line-height:1.5; }
+.login { max-width:520px; margin:clamp(2rem,10vh,7rem) auto; padding:2rem; background:var(--light); border-top:4px solid #a88954; }
+.login h1 { margin:1rem 0 1.4rem; }
+.login form { display:grid; gap:.7rem; }
+@media(max-width:800px) {
+  .shell { grid-template-columns:1fr; gap:1rem; }
+  aside { padding:0; display:flex; flex-wrap:wrap; justify-content:space-between; }
+  nav { display:flex; flex-wrap:wrap; }
+  nav button { width:auto; }
+  .revision { padding:.7rem 0; }
+}
+@media(max-width:525px) {
+  .ledger { grid-template-columns:1fr; }
+  .building-list { max-height:13rem; }
+  .login { margin:1.2rem; padding:1.3rem; }
+  fieldset { padding:.8rem; }
+  .header { padding:.65rem .8rem; }
+}

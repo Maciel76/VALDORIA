@@ -18,10 +18,12 @@ import { collectTax, expansionCost, upgradeStarter, validatedKingdom } from './c
 import { buildingLevel, buildingUpgrade } from './core/building-levels.js';
 import { completeTraining, getTroop, trainTroop, troopRanges, troopTypes } from './core/army.js';
 import { findMission, missionProgress, missionStats, missionStatus } from './core/missions.js';
+import { setEconomyRules } from './core/economy-rules.js';
 import { castleTypes, gates } from './core/geometry.js';
 import { fortificationUpgrade,isFixedFortification,isVillageWall,villageWallId } from './core/fortifications.js';
 import { Editor } from './core/editor.js';
 
+const initialEconomy=request('/economy',{account:null,timeout:20000}).catch(()=>null);
 const root = document.querySelector('#app');
 const hud = new HUD(root);
 const world = root.querySelector('#world');
@@ -47,6 +49,24 @@ let armyUnit=null, armyFilter='all';
 
 function renderArmy(barracks,amount=1) {
   hud.showArmy(state,barracks,armyUnit,armyFilter,amount);
+}
+let economyRevision=-1;
+const economyCache='reino-valdoria-economy';
+
+async function refreshEconomy(pending){
+  try{
+    const snapshot=await (pending??request('/economy',{account:null,timeout:15000}));
+    if(!snapshot||snapshot.revision<=economyRevision||!setEconomyRules(snapshot.rules))return;
+    economyRevision=snapshot.revision;
+    try{localStorage.setItem(economyCache,JSON.stringify(snapshot.rules));}catch{}
+    hud.renderCategory();
+    if(!state)return;
+    if(editor.selection)editor.select(editor.selection.id);
+    editor.updatePreview();
+    changed();
+  }catch{
+    // The game can continue with its last known rules when the server is unavailable.
+  }
 }
 
 function changed({modified=false,created=[],refreshRoutes=true}={}) {
@@ -277,7 +297,7 @@ async function action(which,value) {
           cameraMode('orbit');
           view?.navigation.focusVillageWall(state.territory);
           editor.select(villageWallId);
-          hud.notify('Muralha da vila e três portões construídos.');
+          hud.notify('Perímetro da vila construído.');
         }
       }
       break;
@@ -397,6 +417,7 @@ async function action(which,value) {
     }
     case 'gate': firstGate(); break;
     case 'clear-selection': editor.select(null); break;
+    case 'production': hud.showProduction(active()); break;
     case 'settings': hud.showSettings(active(),slot,saves.account,saves.online,saves.conflicted); break;
     case 'help': hud.showHelp(); break;
     case 'time': hud.showTime(active().time); break;
@@ -625,6 +646,10 @@ setInterval(async ()=>{
   if(ok&&saves.current?.pending&&!saves.conflicted)await saves.save(state);
 },18000);
 
+setInterval(()=>{
+  if(!document.hidden&&!locked)refreshEconomy();
+},15000);
+
 async function initialize() {
   const destination=new URLSearchParams(location.search).get('visita');
   const target=destination && /^(?:[a-f0-9-]{36}|npc-[a-z]+)$/.test(destination) ?
@@ -633,6 +658,8 @@ async function initialize() {
   catch { saves.account=profile(); }
   hud.account(saves.account);
   progress=saves.account?missionProgress(saves.account.progress?.completed):guestMissions();
+  try{setEconomyRules(JSON.parse(localStorage.getItem(economyCache)));}catch{}
+  await refreshEconomy(initialEconomy);
   const loaded=await saves.load(slot,saveKind(slot));
   state=slot==='own'?upgradeStarter(loaded):loaded;
   editor.start(state);hud.saved('Salvo neste navegador');

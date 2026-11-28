@@ -24,15 +24,15 @@ A produção serve o build em [http://localhost:4189](http://localhost:4189). Pa
 
 ## Construir, explorar e visitar
 
-- Na primeira abertura, **Reino principal** mostra uma aldeia jogável com 5.000 moedas e um **Castelo Nível 1**. Em **Configurações → Trocar reino**, **Terreno vazio** inicia do zero. A **Cidade demonstrativa** tem um salvamento próprio e inclui o Grande Castelo de pedra, fortificações e moinho d’água. O último território selecionado reabre automaticamente.
-- Em um reino sem muro, use **Construir → Muralhas e torres → Muralha da vila** para instalar o perímetro de nível 1 com três portões por 1.200 de ouro. A muralha acompanha as expansões do território automaticamente. Abra **Fortificações da vila** nas ferramentas da câmera para enquadrar a muralha inteira ou um dos três portões. A muralha começa no nível 1 e evolui por 850 de ouro. Cada portão começa no nível 1 e evolui separadamente por 250 de ouro. Selecione um portão para abrir ou fechar. No modo de caminhada, também é possível usar **E** próximo a ele.
+- Com as regras padrão, o **Reino principal** começa com 1.500 moedas e um **Castelo Nível 1**. Em **Configurações → Trocar reino**, **Terreno vazio** inicia sem construções. A **Cidade demonstrativa** tem um salvamento próprio e inclui o Grande Castelo de pedra, fortificações e moinho d’água. O último território selecionado reabre automaticamente.
+- Em um reino sem muro, use **Catálogo → Castelos e defesa → Muralha da vila** para instalar o perímetro de nível 1 por 1.200 de ouro nas regras padrão. A muralha acompanha as expansões do território automaticamente. Abra **Fortificações da vila** nas ferramentas da câmera para enquadrar a muralha inteira ou um portão. Selecione um portão para abrir ou fechar. No modo de caminhada, também é possível usar **E** próximo a ele.
 - Em **Construir**, selecione uma peça e posicione a prévia. Clique no terreno ou pressione Enter para confirmar. R e Shift+R giram, Esc cancela e as setas ajustam a prévia. Ative **Linha** para vias e muralhas, ou **Repetir** para continuar colocando a mesma peça.
 - Clique em uma construção para mover, girar ou excluir. Mover e girar são gratuitos. Ctrl+Z desfaz a última operação, inclusive uma linha inteira ou expansão. Uma exclusão só devolve a peça quando desfeita. O custo de expansão aparece antes da compra e cada lado cresce em faixas de 36 m.
 - Na visão aérea, arraste para girar, use o botão direito para deslocar e a roda para aproximar. **Enquadrar castelo**, no lado direito, aproxima a câmera do castelo. **Explorar** alterna para caminhada com WASD ou setas. Arraste para olhar, use J para capturar o mouse e E perto do portão para operá-lo. Em telas de toque, use os botões de caminhada e toque no portão para selecioná-lo.
 - Em **Conta do jogador**, crie um usuário e uma senha. Marque **Levar meu reino deste navegador** para transferir o progresso local do Reino principal para a conta. Use **Já tenho um código de acesso** no cadastro para converter um perfil antigo e manter seu reino. Se houver um conflito entre mudanças locais e online, a versão local pode ser guardada em **Cópia de conflito**.
 - O Reino principal de uma conta nova aparece no **Mapa-múndi** após o primeiro salvamento no MongoDB. As mudanças sincronizadas atualizam a visita. Use **Ocultar meu reino** ou **Mostrar meu reino** para mudar a visibilidade.
 - Casas, castelos e outros alojamentos somam moradores ao reino assim que são construídos. Consulte o número de cada construção no catálogo ou selecione um edifício, inclusive durante uma visita.
-- Selecione uma construção para melhorá-la com ouro. Casas, castelos, fazendas, comércios e edifícios públicos avançam do nível 1 ao 5. A melhoria aumenta as vagas de moradores ou empregos da construção conforme a sua função.
+- Selecione uma construção para melhorá-la com ouro. Os níveis disponíveis e seus efeitos aparecem em **Detalhes** no catálogo. As regras padrão incluem construções que chegam ao nível 5 ou 10, conforme o tipo. O painel administrativo pode configurar os valores por nível.
 - No **Livro de missões**, conclua os objetivos do Reino principal e resgate XP para subir o nível da conta. O MongoDB guarda as missões resgatadas da conta. Como visitante sem conta, o livro tem um progresso próprio neste navegador.
 - Busque um jogador ou reino, selecione uma miniatura e abra a visita 3D. O mapa também tem cinco castelos de NPC que podem ser visitados no modo local. Jogadores conectados que estiverem na mesma visita veem os avatares uns dos outros.
 
@@ -68,3 +68,11 @@ A cidade demonstrativa tem 149 objetos colocados, incluindo 17 edifícios. Na ja
 
 O atlas é compartilhado. A edição acontece individualmente e visitas são de leitura, com presença atualizada a cada poucos segundos. A primeira versão se concentra em construção, decoração e exploração medieval.
 
+
+## Administração de Valdória
+
+Abra `/admin/r/valdoria` para configurar o ouro inicial, a muralha inicial, os ciclos de arrecadação e as tarifas de expansão. Em **Construções e níveis**, configure os custos, moradores, empregos, receita e produção de cada nível. O nível 1 define o preço da loja. Os níveis seguintes definem o custo da melhoria.
+
+Defina a ordem pública de cada construção e o bônus de arrecadação por 100 pontos completos. As decorações contribuem apenas com ordem pública. O catálogo mostra os efeitos do nível 1 no cartão e permite consultar outros níveis em **Detalhes**.
+
+Defina `VALDORIA_ADMIN_TOKEN` no ambiente do servidor com pelo menos 24 caracteres, reinicie e use esse token para entrar no painel. As regras publicadas ficam em `game_settings` no MongoDB, no banco configurado em `MONGODB_DATABASE`. A instalação local usa `mongodb://127.0.0.1:27017` por padrão. Para usar um arquivo em uma instalação sem MongoDB, defina `VALDORIA_ECONOMY_FILE` explicitamente. As partidas carregam as regras ao abrir e consultam atualizações enquanto a aba está ativa.

@@ -1,5 +1,6 @@
 import { catalogue } from './catalog.js';
 import { fortificationLevel, fortificationUpgradeCost } from './fortifications.js';
+import { configuredBuildingLevel, maxBuildingLevel as economyMaxLevel } from './economy-rules.js';
 
 const buildings = new Set(['housing','trade','civic','castle']);
 export const MAX_BUILDING_LEVEL = 5;
@@ -77,13 +78,18 @@ export function buildingYield(object) {
     jobs:jobs ? jobs+Math.max(1,Math.floor(jobs/5))*bonus : 0};
 }
 
+export const defaultBuildingUpgradeCost=(type,level)=>Math.ceil(catalogue[type].price*(45+(level-2)*22)/500)*5;
+
 export function buildingUpgrade(object) {
-  if(!object || !canLevel(object.type))return null;
+  if(!object)return null;
   const level=buildingLevel(object);
-  if(level>=maxBuildingLevel(object.type))return null;
+  const configured=configuredBuildingLevel(object.type,level+1);
+  if(level>=economyMaxLevel(object.type)||
+     (!configured&&level>=maxBuildingLevel(object.type))||
+     (!canLevel(object.type)&&(!configured||object.wallLevel!==undefined||!catalogue[object.type].purchasable)))return null;
   if(object.type==='stockade' && level===1) {
     return {cost:fortificationUpgradeCost(object),level:2,object:{...object,wallLevel:2}};
   }
-  const cost=Math.ceil(catalogue[object.type].price*(45+(level-1)*22)/500)*5;
+  const cost=configured?.cost??defaultBuildingUpgradeCost(object.type,level+1);
   return {cost,level:level+1,object:{...object,level:level+1}};
 }

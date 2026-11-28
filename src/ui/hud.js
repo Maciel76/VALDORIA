@@ -1,13 +1,15 @@
-import { catalogue,categories } from '../core/catalog.js';
-import { economy, expansionCost, HARVEST_MS, times } from '../core/kingdom.js';
-import { buildingLevel, buildingStyle, buildingUpgrade, buildingYield, canLevel, isHousing } from '../core/building-levels.js';
+import { catalogue } from '../core/catalog.js';
+import { economy, expansionCost, harvestInterval, times } from '../core/kingdom.js';
+import { buildingLevel, buildingStyle, buildingUpgrade, canLevel, isHousing } from '../core/building-levels.js';
 import { gates, plotDimensions } from '../core/geometry.js';
+import { buildingEconomy,buildingLevels,constructionCost,economyRules,isDecoration,objectLevel,resources } from '../core/economy-rules.js';
 import {
   fortificationRole,fortificationLevel,fortificationUpgradeCost,
   isFixedFortification,isVillageGate,isVillageWall,villageGateNames
 } from '../core/fortifications.js';
 import { BAND, bounds, directions, expansionOptions, LIMIT } from '../world/terrain-data.js';
 import { LOT_SIZE,usesLots } from '../world/lots.js';
+import { villageGatePositions } from '../world/perimeter.js';
 import { icon,refreshIcons } from './icons.js';
 import { drawMinimap } from './atlas-art.js';
 import { fillThumbnails } from './previews.js';
@@ -15,9 +17,21 @@ import { escapeHTML } from './html.js';
 import { missionBook } from './mission-book.js';
 import { troopTypes, troopRanges } from '../core/army.js';
 import { armyPanel, duration, troopImage } from './army-panel.js';
+import { shopGroups,shopPosition } from './catalogue-layout.js';
 
 const fmt = new Intl.NumberFormat('pt-BR');
 const residentLabel = count => `${fmt.format(count)} ${count===1?'morador':'moradores'}`;
+
+const percent = new Intl.NumberFormat('pt-BR',{maximumFractionDigits:2});
+function economyEffects(type,rule){
+  const effects=[];
+  if(rule.homes)effects.push(['users-round',`${fmt.format(rule.homes)} moradores`]);
+  if(rule.jobs)effects.push(['hammer',`${fmt.format(rule.jobs)} empregos`]);
+  if(rule.gold)effects.push(['coins',`+${fmt.format(rule.gold)} ouro por ciclo`]);
+  if(rule.resource&&rule.quantity)effects.push(['wheat',`+${fmt.format(rule.quantity)} ${resources[rule.resource]} por ciclo`]);
+  if(rule.publicOrder||isDecoration(type))effects.push(['shield',`+${fmt.format(rule.publicOrder)} ordem pública`]);
+  return effects.map(([symbol,label])=>`<span>${icon(symbol)}${label}</span>`).join('');
+}
 const clamp = (value,min,max)=>Math.max(min,Math.min(max,value));
 const timeOptions = [['morning','Manhã','cloud-sun'],['noon','Meio-dia','sun'],['sunset','Entardecer','sunset'],['night','Noite','moon']];
 const names={north:'Norte',east:'Leste',south:'Sul',west:'Oeste'};
@@ -29,7 +43,9 @@ export class HUD {
   constructor(root) {
     this.root=root;
     this.category='housing';
+    this.subcategory='all';
     this.item=null;
+    this.itemLevel=1;
     this.hasVillageWall=false;
     this.saveStatus='Abrindo reino…';
     root.innerHTML=`
@@ -37,7 +53,7 @@ export class HUD {
         <div id="world" class="world"></div>
         <div class="world-vignette"></div>
         <div class="stats dark" aria-label="Economia do reino">
-          ${stat('coins','gold','Ouro')}${stat('users-round','people','Moradores')}${stat('hammer','jobs','Empregos')}
+          ${stat('coins','gold','Ouro')}${stat('users-round','people','Moradores')}${stat('hammer','jobs','Empregos')}${stat('shield','public-order','Ordem pública')}
           <div class="stat tax">${icon('coins')}<div><strong id="income">—</strong><small id="tax-time">Arrecadação</small><div class="tax-track"><i id="tax-progress"></i></div></div></div>
         </div>
         <div class="game-tools" aria-label="Ajustes do jogo">
@@ -46,14 +62,23 @@ export class HUD {
           <button type="button" class="tool save-state" data-action="settings" aria-label="Configurações" title="Configurações">${icon('settings-2')}<i class="status-dot" aria-hidden="true"></i></button>
         </div>
         <dialog class="paper catalogue" id="catalogue" aria-labelledby="catalogue-title">
-          <div class="pane-heading"><div class="heading-medallion">${icon('hammer')}</div><h2 id="catalogue-title">Construir</h2>
-            ${button('mark-clearing','Limpar área','pickaxe','class="gate-button compact clear-entry"')}${tool('catalogue','Fechar catálogo','x')}</div>
-          <div class="category-tabs" role="group" aria-label="Categorias">
-            ${categories.map(category=>`<button type="button" data-category="${category.id}" title="${category.name}" aria-label="${category.name}" aria-pressed="false">${icon(category.icon)}</button>`).join('')}
+          <header class="catalogue-heading">
+            <div class="catalogue-crest" aria-hidden="true">${icon('castle')}</div>
+            <h2 id="catalogue-title">Catálogo do Reino</h2>${tool('catalogue','Fechar catálogo','x')}
+          </header>
+          <div class="catalogue-body">
+            <nav class="category-tabs" aria-label="Categorias do catálogo">
+              ${shopGroups.map(group=>`<button type="button" data-category="${group.id}" aria-pressed="false" aria-controls="catalogue-section">${icon(group.icon)}<span>${group.name}</span></button>`).join('')}
+            </nav>
+            <section class="catalogue-section" id="catalogue-section" aria-labelledby="category-name">
+              <header class="category-header">
+                <div class="category-heading"><h3 id="category-name"></h3><span id="category-total"></span></div>
+                <nav class="subcategory-tabs" aria-label="Subcategorias" id="shop-subcategories"></nav>
+              </header>
+              <div id="shop-items" class="shop-items"></div>
+              <div id="item-detail" class="item-detail"></div>
+            </section>
           </div>
-          <div class="category-heading"><h3 id="category-name"></h3><span id="category-total"></span></div>
-          <div id="shop-items" class="shop-items"></div>
-          <div id="item-detail" class="item-detail"></div>
         </dialog>
         <div id="selection" class="selection" role="group" hidden></div>
         <div class="map-inset" aria-label="Navegação do território">
@@ -73,7 +98,7 @@ export class HUD {
         </div>
         <section class="placement dark" id="placement" hidden aria-label="Posicionamento"></section>
         <footer class="dock" aria-label="Ferramentas do reino">
-          ${button('catalogue','Construir','hammer','class="dock-button" aria-haspopup="dialog" aria-controls="catalogue" aria-expanded="false"')}
+          ${button('catalogue','Catálogo','hammer','class="dock-button" aria-haspopup="dialog" aria-controls="catalogue" aria-expanded="false"')}
           ${button('map','Mapa-múndi','map','class="dock-button world-button"')}
           ${button('walk','Explorar','person-standing','class="dock-button" aria-pressed="false"')}
           ${button('territory','Território','expand','class="dock-button"')}
@@ -87,6 +112,7 @@ export class HUD {
         <dialog id="panel" class="paper modal" aria-labelledby="panel-title"></dialog>
       </main>`;
     this.shop=root.querySelector('#shop-items');
+    this.subcategories=root.querySelector('#shop-subcategories');
     this.catalogue=root.querySelector('#catalogue');
     this.catalogueButton=root.querySelector('.dock [data-action="catalogue"]');
     this.catalogue.addEventListener('close',()=>{
@@ -105,15 +131,41 @@ export class HUD {
     this.popup.addEventListener('input',event=>{
       if(event.target.id==='army-amount')this.updateArmyPrice();
     });
+    this.items.addEventListener('change',event=>{
+      if(event.target.id!=='item-level')return;
+      this.itemLevel=Number(event.target.value);
+      this.renderDetail();
+      refreshIcons();
+      this.items.querySelector('#item-level')?.focus();
+    });
     this.popup.addEventListener('change',event=>{
       if(event.target.id==='expansion-lot')handle('preview-expansion',event.target.value,event);
     });
     this.root.addEventListener('click',event=>{
-      const target=event.target.closest('button[data-action],button[data-category],button[data-item]');
+      const target=event.target.closest('button[data-action],button[data-category],button[data-subcategory],button[data-item],button[data-item-info]');
       if(!target || target.disabled)return;
-      if(target.dataset.category){this.category=target.dataset.category;this.renderCategory();return;}
+      if(target.dataset.category){
+        if(this.category===target.dataset.category)return;
+        this.category=target.dataset.category;
+        this.subcategory='all';
+        this.renderCategory();
+        return;
+      }
+      if(target.dataset.subcategory){
+        if(this.subcategory===target.dataset.subcategory)return;
+        this.subcategory=target.dataset.subcategory;
+        this.renderCategory();
+        return;
+      }
+      if(target.dataset.itemInfo){
+        this.item=this.item===target.dataset.itemInfo?null:target.dataset.itemInfo;
+        this.itemLevel=1;
+        this.markItem();
+        return;
+      }
       if(target.dataset.item){
         this.item=target.dataset.item;
+        this.itemLevel=1;
         this.markItem();
         handle('item',this.item,event);
         return;
@@ -121,20 +173,34 @@ export class HUD {
       handle(target.dataset.action,target.dataset.value,event);
     });
   }
+  inShopSection(item) {
+    const position=shopPosition(item);
+    return position?.group===this.category&&(this.subcategory==='all'||position.section===this.subcategory);
+  }
   renderCategory() {
-    const { name }=categories.find(category=>category.id===this.category);
-    const matches=Object.values(catalogue).filter(item=>item.category===this.category&&item.purchasable);
+    const {name,icon:symbol,sections}=shopGroups.find(group=>group.id===this.category);
+    const matches=Object.values(catalogue).filter(item=>item.purchasable&&this.inShopSection(item));
     this.root.querySelector('#category-name').textContent=name;
     this.root.querySelector('#category-total').textContent=`${matches.length} ${matches.length===1?'peça':'peças'}`;
     this.catalogue.querySelectorAll('[data-category]').forEach(button=>button.setAttribute('aria-pressed',button.dataset.category===this.category));
+    if(this.subcategories.dataset.group!==this.category){
+      this.subcategories.dataset.group=this.category;
+      this.subcategories.setAttribute('aria-label',`Subcategorias de ${name}`);
+      this.subcategories.innerHTML=[{id:'all',name:'Todas'},...sections].map(({id,name})=>
+        `<button type="button" data-subcategory="${id}" aria-controls="shop-items">${name}</button>`).join('');
+      this.subcategories.scrollLeft=0;
+    }
+    this.subcategories.querySelectorAll('[data-subcategory]').forEach(button=>
+      button.setAttribute('aria-pressed',button.dataset.subcategory===this.subcategory));
     this.shop.innerHTML=matches.map(item=>{
       const perimeter=item.id==='villageWall';
       const owned=perimeter&&this.hasVillageWall;
-      return `<button class="item-card" type="button" data-item="${item.id}" aria-pressed="false" title="${item.description}" ${owned?'disabled':''}>
-        <span class="item-figure">${icon(categories.find(c=>c.id===this.category).icon)}<img data-model="${perimeter?'palisade':item.id}" alt=""></span>
-        <span class="item-copy"><strong>${item.name}</strong><small>${owned?'Já construída':icon('coins')+fmt.format(item.price)}</small>
-          ${item.homes?`<small>${icon('users-round')}${residentLabel(item.homes)}</small>`:''}</span>
-        </button>`;
+      const effects=economyEffects(item.id,buildingEconomy(item.id));
+      return `<article class="item-entry"><button class="item-card" type="button" data-item="${item.id}" aria-pressed="false" title="${item.description}" ${owned?'disabled':''}>
+        <span class="item-figure">${icon(symbol)}<img data-model="${perimeter?'palisade':item.id}" alt=""></span>
+        <span class="item-copy"><strong>${item.name}</strong><small>${owned?'Já construída':icon('coins')+fmt.format(constructionCost(item.id))}</small>
+          <span class="item-effects">${effects||'<span>Sem produção ou bônus</span>'}</span></span>
+        </button><button class="item-info" type="button" data-item-info="${item.id}" aria-label="Detalhes de ${item.name}" aria-controls="item-detail" aria-expanded="false">${icon('circle-help')} Detalhes</button></article>`;
     }).join('');
     this.shop.scrollTop=0;
     this.markItem();
@@ -142,20 +208,26 @@ export class HUD {
   }
   markItem() {
     this.shop.querySelectorAll('[data-item]').forEach(button=>button.setAttribute('aria-pressed',button.dataset.item===this.item));
+    this.shop.querySelectorAll('[data-item-info]').forEach(button=>button.setAttribute('aria-expanded',button.dataset.itemInfo===this.item));
     this.renderDetail();
     refreshIcons();
   }
   renderDetail() {
     const item=catalogue[this.item];
-    if(!item || item.category!==this.category){
+    if(!item || !this.inShopSection(item)){
       this.items.hidden=true;
       return;
     }
     this.items.hidden=false;
+    const levels=buildingLevels(item.id);
+    const level=Math.min(this.itemLevel,levels.length);
+    const rule=levels[level-1];
+    const effects=economyEffects(item.id,rule);
     const size=item.id==='villageWall'?'Todo o território':item.id==='terrainSlope'?'Largura ajustável':`${fmt.format(item.w)} × ${fmt.format(item.d)} m`;
-    this.items.innerHTML=`<p>${item.description}</p><div><span>${icon('expand')}${size}</span>
-      ${item.homes?`<span>${icon('users-round')}${residentLabel(item.homes)}</span>`:''}
-      ${item.jobs?`<span>${icon('hammer')}${item.jobs} empregos</span>`:''}</div>`;
+    this.items.innerHTML=`<header><strong>${item.name}</strong>${levels.length>1?`<label>Nível <select id="item-level">
+      ${levels.map((_,index)=>`<option value="${index+1}" ${index+1===level?'selected':''}>${index+1}</option>`).join('')}</select></label>`:''}</header>
+      <p>${item.description}</p><div><span>${icon('expand')}${size}</span><span>${icon('coins')}${fmt.format(rule.cost)} ouro ${level===1?'para construir':'para melhorar'}</span>
+      ${effects}${!isDecoration(item.id)&&!rule.quantity?'<span>Sem recurso produzido</span>':''}</div>`;
   }
   toggleCatalogue(open=!this.catalogue.open) {
     if(open===this.catalogue.open)return;
@@ -186,7 +258,11 @@ export class HUD {
     this.root.querySelector('#people').textContent=fmt.format(report.homes);
     this.root.querySelector('#jobs').textContent=fmt.format(report.jobs);
     this.root.querySelector('#jobs').title=`${report.filled} postos ocupados`;
+    this.root.querySelector('#public-order').textContent=fmt.format(report.publicOrder);
+    const bonus=`+${percent.format(report.bonusPercent)}% de arrecadação pela ordem pública`;
+    this.root.querySelector('#public-order').title=bonus;
     this.root.querySelector('#income').textContent='+'+fmt.format(report.income);
+    this.root.querySelector('#income').title=`${bonus} (+${fmt.format(report.bonusGold)} ouro por ciclo)`;
     this.root.querySelector('.undo-button').disabled=!undo||Boolean(guest);
     this.root.querySelectorAll('[data-action="catalogue"],[data-action="territory"]').forEach(x=>x.disabled=Boolean(guest));
     this.root.querySelector('#game').classList.toggle('visiting',Boolean(guest));
@@ -209,7 +285,7 @@ export class HUD {
   tax(state) {
     const seconds=Math.max(0,Math.ceil((state.nextTaxAt-Date.now())/1000));
     this.root.querySelector('#tax-time').textContent=`Arrecadação em ${seconds}s`;
-    this.root.querySelector('#tax-progress').style.width=(1-Math.min(1,seconds*1000/HARVEST_MS))*100+'%';
+    this.root.querySelector('#tax-progress').style.width=(1-Math.min(1,seconds*1000/harvestInterval()))*100+'%';
   }
   camera(mode) {
     const walk=mode==='walk';
@@ -259,13 +335,14 @@ export class HUD {
     const role=fortificationRole(object);
     const item=catalogue[object.type];
     const upgradable=canLevel(object.type);
-    const level=upgradable?buildingLevel(object):fortificationLevel(object);
-    const occupancy=item?.homes ? residentLabel(buildingYield(object).homes) : '';
+    const level=objectLevel(object);
+    const rule=item?buildingEconomy(object.type,level):null;
+    const occupancy=rule?.homes ? residentLabel(rule.homes) : '';
     const upgrade=buildingUpgrade(object);
     const levelLabel=upgradable&&role!=='castle'?`Nível ${level}`:'';
     const style=level>1?buildingStyle(object):null;
     const details=[levelLabel,occupancy].filter(Boolean).join(' · ');
-    const summary=details?`<span class="selection-residents">${style&&!readOnly?`<strong>${style}</strong>`:''}<span>${details}</span></span>`:'';
+    const summary=details?`<span class="selection-residents">${details}</span>`:'';
     this.selection.style.cssText='';
     if(natural){
       this.selection.className='paper obstacle-selection';
@@ -302,7 +379,10 @@ export class HUD {
       this.selection.setAttribute('aria-label',`${readOnly?'Construção':'Ações para'} ${name}`);
     }else{
       this.selection.className='selection';
-      this.selection.setAttribute('aria-label',`Ações para ${style??item.name}`);
+      const name=style??item.name;
+      const gold=rule.gold+rule.homes*economyRules().residentGold;
+      const effects=economyEffects(object.type,{...rule,gold});
+      this.selection.setAttribute('aria-label',`Ações para ${name}`);
       const actions=[
         ['move','Mover construção','move'],
         ['rotate-object','Girar construção','rotate-cw'],
@@ -312,8 +392,11 @@ export class HUD {
       if(gates.has(object.type))actions.unshift(['gate',object.open?'Fechar portão':'Abrir portão',object.open?'door-closed':'door-open']);
       if(upgrade)actions.unshift(['show-building-upgrade',`Melhorar para o nível ${upgrade.level}`,'arrow-up-circle']);
       if(object.type==='barracks')actions.unshift(['train','Treinar tropas','swords']);
-      this.selection.innerHTML=summary+actions.map(([action,label,symbol],index)=>
-        tool(action,label,symbol,`style="--angle:${index*360/actions.length}deg"`)).join('');
+      this.selection.innerHTML=`<div class="selection-card">
+        <h3>${name}</h3><small>Nível ${level}</small>
+        <div class="selection-effects">${effects||'<span>Sem produção ativa</span>'}</div>
+      </div>${actions.map(([action,label,symbol],index)=>
+        tool(action,label,symbol,`style="--angle:${index*360/actions.length}deg"`)).join('')}`;
     }
     refreshIcons();
     if(focused)this.selection.querySelector(`[data-action="${focused}"]`)?.focus({preventScroll:true});
@@ -336,7 +419,7 @@ export class HUD {
     const left=padding,right=width-padding-Math.min(42,width*.1);
     const top=padding+Math.min(58,height*.16),bottom=height-padding-Math.min(82,height*.22);
     const maxRadius=Math.min((right-left)/2,(bottom-top)/2,178);
-    const minRadius=Math.min(58,maxRadius);
+    const minRadius=Math.min(width<=570?102:118,maxRadius);
     const x=clamp(projected.x,left+minRadius,right-minRadius);
     const y=clamp(projected.y,top+minRadius,bottom-minRadius);
     const available=Math.min(maxRadius,x-left,right-x,y-top,bottom-y);
@@ -367,10 +450,17 @@ export class HUD {
     const item=catalogue[object.type];
     const style=buildingStyle(upgrade.object);
     const name=item.id==='stockade'?'Castelo':buildingStyle(object)??item.name;
-    const before=buildingYield(object),after=buildingYield(upgrade.object);
+    const before=buildingEconomy(object.type,objectLevel(object));
+    const after=buildingEconomy(object.type,objectLevel(upgrade.object));
     const changes=[];
     if(before.homes!==after.homes)changes.push(`<div>${icon('users-round')}<span>Moradores</span><strong>${before.homes} → ${after.homes}</strong></div>`);
     if(before.jobs!==after.jobs)changes.push(`<div>${icon('hammer')}<span>Empregos</span><strong>${before.jobs} → ${after.jobs}</strong></div>`);
+    if(before.gold!==after.gold)changes.push(`<div>${icon('coins')}<span>Ouro por ciclo</span><strong>${before.gold} → ${after.gold}</strong></div>`);
+    if(before.publicOrder!==after.publicOrder)changes.push(`<div>${icon('shield')}<span>Ordem pública</span><strong>${before.publicOrder} → ${after.publicOrder}</strong></div>`);
+    if(before.resource!==after.resource||before.quantity!==after.quantity){
+      const output=rule=>rule.resource?`${fmt.format(rule.quantity)} ${resources[rule.resource]}`:'—';
+      changes.push(`<div>${icon('wheat')}<span>Recurso por ciclo</span><strong>${output(before)} → ${output(after)}</strong></div>`);
+    }
     const lot=plotDimensions(object),nextLot=plotDimensions(upgrade.object);
     if(lot.w!==nextLot.w||lot.d!==nextLot.d){
       changes.push(`<div>${icon('expand')}<span>Espaço livre necessário</span><strong>${nextLot.w} × ${nextLot.d} m</strong></div>`);
@@ -455,9 +545,10 @@ export class HUD {
     this.modal('Fortificações da vila',`<div class="option-grid">${options.join('')}</div>`);
   }
   showVillageWallPurchase(state) {
-    const cost=catalogue.villageWall.price;
+    const cost=constructionCost('villageWall');
     const edge=bounds(state.territory);
-    this.modal('Construir muralha da vila',`<p class="modal-intro">A muralha de nível 1 e os três portões serão instalados em volta do seu território de <strong>${edge.maxX-edge.minX} × ${edge.maxZ-edge.minZ} m</strong>. A muralha se ajusta quando você amplia o reino.</p>
+    const gates=Object.keys(villageGatePositions(state.territory)).length;
+    this.modal('Construir muralha da vila',`<p class="modal-intro">A muralha de nível 1, com ${gates===1?'um portão':`${gates} portões`}, cercará sua área disponível de <strong>${edge.maxX-edge.minX} × ${edge.maxZ-edge.minZ} m</strong>. Ela se ajusta quando você amplia o reino.</p>
       ${state.gold<cost?'<p class="modal-intro">Ouro insuficiente.</p>':''}
       <div class="modal-actions">${button('buy-village-wall',`Construir por ${fmt.format(cost)} de ouro`,'hammer',`class="primary" ${state.gold<cost?'disabled':''}`)}</div>`);
   }
@@ -506,6 +597,16 @@ export class HUD {
       state.gold<cost?balance+' · Saldo insuficiente':balance;
     if(status.textContent!==message)status.textContent=message;
   }
+  showProduction(state) {
+    const stock=state.resources??{};
+    const {production:output={},publicOrder,bonusGold,bonusPercent}=economy(state);
+    const rows=Object.entries(resources).filter(([id])=>stock[id]||output[id]).map(([id,name])=>
+      `<li><strong>${name}</strong> · ${fmt.format(stock[id]??0)} em estoque · +${fmt.format(output[id]??0)} por ciclo</li>`);
+    this.modal('Produção do reino',`<p class="modal-intro"><strong>${fmt.format(publicOrder)} pontos de ordem pública</strong><br>
+      +${percent.format(bonusPercent)}% de arrecadação (+${fmt.format(bonusGold)} ouro por ciclo)</p>
+      ${rows.length?`<ul class="help-content">${rows.join('')}</ul>`:
+        '<p class="modal-intro">Nenhuma construção produz recursos neste reino.</p>'}`);
+  }
   showSettings(state,slot,localProfile,online,conflicted) {
     this.modal('Configurações',`<form id="settings-form" class="settings-form"><label>Nome do reino<input name="realm" required maxlength="38" value="${escapeHTML(state.name)}"></label>
       <label>Qualidade gráfica<select name="quality"><option value="low" ${state.quality==='low'?'selected':''}>Leve</option><option value="standard" ${state.quality==='standard'?'selected':''}>Padrão</option><option value="high" ${state.quality==='high'?'selected':''}>Alta</option></select></label>
@@ -516,12 +617,13 @@ export class HUD {
       ${conflicted?button('resolve','Resolver conflito','lock-keyhole','class="outlined"'):''}
       ${button('save','Salvar agora','save','class="outlined"')}
       ${button('saves','Trocar reino','layers','class="outlined"')}
+      ${button('production','Ver produção','store','class="outlined"')}
       </div>`);
   }
   showSlots(current) {
     this.modal('Seus reinos',`<div class="save-list">${[['own','Reino principal','Seu reino para publicar no mapa-múndi.'],
       ['starter','Reino iniciante','Um salvamento separado para começar com o castelo e ampliar por lotes.'],
-      ['empty','Terreno vazio','Um salvamento independente para começar com 5.000 moedas.'],
+      ['empty','Terreno vazio',`Um salvamento independente para começar com ${fmt.format(economyRules().emptyGold)} moedas.`],
       ['demo','Cidade demonstrativa','Explore o Domínio do Alvorecer em um salvamento separado.'],
       ['backup','Cópia de conflito','Recupere a cópia local de uma versão substituída.']].map(([slot,name,detail])=>
       `<button type="button" data-action="slot" data-value="${slot}" class="${current===slot?'current':''}">${icon(slot==='own'||slot==='starter'?'castle':slot==='demo'?'landmark':slot==='backup'?'save':'tree-pine')}<span><strong>${name}</strong><small>${detail}</small></span>${icon('chevron-right')}</button>`).join('')}</div>`);

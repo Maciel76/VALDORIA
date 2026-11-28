@@ -1,3 +1,4 @@
+import { buildingEconomy,objectLevel } from '../core/economy-rules.js';
 import * as THREE from 'three';
 import { catalogue } from '../core/catalog.js';
 import { economy } from '../core/kingdom.js';
@@ -29,13 +30,14 @@ export function makeRouteGraph(state, blocked) {
   const terminals = [];
   for(const object of state.objects) {
     const item=catalogue[object.type];
+    const rule=buildingEconomy(object.type,objectLevel(object));
     if(item.category==='roads'){
       add(object.x,object.z,false,!item.sidewalkOf);
       if(bridges.has(item.id))for(let m=1-item.d/2;m<item.d/2;m+=2) {
         const a=angleOf(object.rotation);
         add(object.x+Math.sin(a)*m,object.z+Math.cos(a)*m,false,true);
       }
-    } else if(item.jobs || item.homes){
+    } else if(rule.jobs || rule.homes){
       const entry=worldBoxes(object,[{x:0,z:item.d*.5+.53,w:1,d:1}])[0];
       const nearer=worldBoxes(object,[{x:0,z:item.id==='market'?2.05:item.d*.43,w:1,d:1}])[0];
       terminals.push({...entry,closer:nearer,type:object.type});

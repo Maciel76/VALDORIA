@@ -8,6 +8,7 @@ import { villagePerimeterBounds } from './perimeter.js';
 import { usesLots } from './lots.js';
 
 const groundClearance=1.4;
+const panoramaDistance=1250;
 
 export class KingdomCamera {
   constructor(canvas,camera) {
@@ -18,13 +19,14 @@ export class KingdomCamera {
     this.orbit.enableDamping=true;
     this.orbit.dampingFactor=.13;
     this.orbit.minDistance=16;
-    this.orbit.maxDistance=295;
+    this.orbit.maxDistance=panoramaDistance;
     this.orbit.maxPolarAngle=Math.PI*.486;
     this.orbit.panSpeed=.82;
     this.orbit.screenSpacePanning=false;
     this.orbit.zoomSpeed=.69;
     this.orbit.mouseButtons={LEFT:THREE.MOUSE.ROTATE,MIDDLE:THREE.MOUSE.DOLLY,RIGHT:THREE.MOUSE.PAN};
     this.mode='orbit';this.keys=new Set();
+    this.viewAngle=new THREE.Spherical();
     this.position=new THREE.Vector3(-.6,0,9);
     this.yaw=0;this.pitch=-.04;
     this.manual=null;
@@ -134,7 +136,6 @@ export class KingdomCamera {
     this.mode=mode;
     this.orbit.enabled=mode!=='walk';
     this.orbit.maxPolarAngle=mode==='free'?Math.PI*.495:Math.PI*.465;
-    this.orbit.maxDistance=mode==='free'?470:295;
     this.keys.clear();
     if(mode!=='walk')this.updateOrbitView();
   }
@@ -159,9 +160,14 @@ export class KingdomCamera {
       target.y+=rise;
       this.targetGround=ground;
     }
-    this.camera.position.copy(desired);
-    const ground=this.floorAt(desired.x,desired.z);
-    if(ground!==undefined)this.camera.position.y=Math.max(desired.y,ground+groundClearance);
+    const position=this.camera.position.copy(desired);
+    const angle=this.viewAngle.setFromVector3(position.sub(target));
+    const panorama=THREE.MathUtils.smoothstep(angle.radius,230,620);
+    // Tilt the view down at long range while keeping the player's orbit angle for zooming back in.
+    angle.phi=THREE.MathUtils.lerp(angle.phi,Math.min(angle.phi,Math.PI/5),panorama);
+    position.setFromSpherical(angle).add(target);
+    const ground=this.floorAt(position.x,position.z);
+    if(ground!==undefined)position.y=Math.max(position.y,ground+groundClearance);
     this.camera.lookAt(target);
     this.camera.updateMatrixWorld();
   }

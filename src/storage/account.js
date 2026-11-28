@@ -10,8 +10,8 @@ export function setProfile(value) {
   else localStorage.removeItem(profileKey);
 }
 
-export async function request(path,{method='GET',payload,account=profile()}={}) {
-  const result = await fetch('/api'+path,{method,signal:AbortSignal.timeout(6000),headers:{
+export async function request(path,{method='GET',payload,account=profile(),timeout=6000}={}) {
+  const result = await fetch('/api'+path,{method,signal:AbortSignal.timeout(timeout),headers:{
     ...(payload!==undefined?{'Content-Type':'application/json'}:{}),
     ...(account?.token?{Authorization:'Bearer '+account.token}:{}),
     ...(account?.id?{'X-Valdoria-Account':account.id}:{})

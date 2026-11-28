@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { randomBytes } from 'node:crypto';
+import { mkdtemp,rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { MongoClient } from 'mongodb';
 import { createApi } from '../server/api.js';
 import { makeKingdom } from '../src/world/demo.js';
@@ -36,7 +39,58 @@ test('servidor sem MongoDB informa o modo local ao navegador',async()=>{
   });
 });
 
+test('admin protege, valida e publica a economia com controle de revisão',async()=>{
+  const directory=await mkdtemp(join(tmpdir(),'valdoria-economy-'));
+  const token=randomBytes(32).toString('hex');
+  const env={MONGODB_URI:'disabled',VALDORIA_ADMIN_TOKEN:token,VALDORIA_ECONOMY_FILE:join(directory,'rules.json')};
+  const route='/admin/valdoria/economy';
+  try{
+    await isolated(env,async send=>{
+      assert.equal((await send(route)).status,401);
+      const {revision,rules}=await send(route,'GET',token);
+      assert.equal(revision,0);
+      assert.equal((await send(route,'PUT',token,{revision,rules:{...rules,harvestSeconds:0}})).status,400);
+      rules.starterGold=3200;
+      const changes=await Promise.all([send(route,'PUT',token,{revision,rules}),send(route,'PUT',token,{revision,rules})]);
+      assert.deepEqual(changes.map(change=>change.status).sort(),[200,409]);
+      assert.equal((await send('/economy','PUT',token,{revision:1,rules})).status,405);
+    });
+    await isolated(env,async send=>{
+      const result=await send('/economy');
+      assert.equal(result.revision,1);
+      assert.equal(result.rules.starterGold,3200);
+      assert.equal((await send(route,'GET','invalid')).status,401);
+    });
+  }finally{await rm(directory,{recursive:true,force:true});}
+});
+
 const uri=process.env.VALDORIA_TEST_MONGO;
+test('admin grava as regras na coleção do MongoDB e recupera após reiniciar',{skip:!uri},async()=>{
+  const database='reino_valdoria_economy_'+randomBytes(6).toString('hex');
+  const token=randomBytes(32).toString('hex');
+  const env={MONGODB_URI:uri,MONGODB_DATABASE:database,VALDORIA_ADMIN_TOKEN:token};
+  const mongo=new MongoClient(uri);
+  try{
+    await isolated(env,async send=>{
+      const {revision,rules}=await send('/admin/valdoria/economy','GET',token);
+      rules.harvestSeconds=45;
+      const changes=await Promise.all(Array.from({length:2},()=>
+        send('/admin/valdoria/economy','PUT',token,{revision,rules})));
+      assert.deepEqual(changes.map(change=>change.status).sort(),[200,409]);
+    });
+    await isolated(env,async send=>{
+      const published=await send('/economy');
+      assert.equal(published.revision,1);
+      assert.equal(published.rules.harvestSeconds,45);
+    });
+    const stored=await mongo.db(database).collection('game_settings').findOne({_id:'valdoria-economy'});
+    assert.equal(stored.rules.harvestSeconds,45);
+  }finally{
+    await mongo.db(database).dropDatabase();
+    await mongo.close();
+  }
+});
+
 test('jogadores independentes, publicação, visitas, presença, operações idempotentes e conflito',{skip:!uri},async()=>{
   const database='reino_valdoria_test_'+randomBytes(6).toString('hex');
   const mongo = new MongoClient(uri);

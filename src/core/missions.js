@@ -34,11 +34,11 @@ export function missionProgress(ids) {
   return {completed,xp,level,start:levelXP(level),next:levelXP(level+1)};
 }
 
-export function missionStats(state) {
+export function missionStats(state,rules) {
   const stats={castles:0,homes:0,trade:0,level2:0,level3:0,level5:0,castleLevel:0,civic2:0,trade3:0};
   const territory=state?.territory;
   stats.expansions=territory?.lots?.length ?? directions.reduce((sum,side)=>sum+(territory?.[side] ?? 0),0);
-  stats.people=state ? economy(state).homes : 0;
+  stats.people=state ? economy(state,rules).homes : 0;
   for(const object of state?.objects ?? []){
     if(!canLevel(object.type))continue;
     const level=buildingLevel(object);

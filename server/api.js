@@ -1,3 +1,4 @@
+import { createEconomyStore } from './economy.js';
 import { createStore, kingdomSnapshot, worldSummary } from './store.js';
 import { aliasPattern, credentials, matchesPassword, newSession, passwordRecord,
   publicAccount, readSession, sessionCookie, tokenPattern } from './accounts.js';
@@ -29,6 +30,7 @@ function send(response,status,data) {
 
 export function createApi(env=process.env) {
   const store = createStore(env);
+  const economy = createEconomyStore(env,store.economyCollection());
   const rooms = new Map();
   const credentialAttempts = new Map();
   let hashJobs = 0;
@@ -85,12 +87,30 @@ export function createApi(env=process.env) {
   async function handle(request,response) {
     const path = new URL(request.url,'http://localhost').pathname.replace(/^\/api(?=\/)/,'');
     const method = request.method, token = request.headers.authorization?.replace(/^Bearer /,'') || '';
+    const fetchSite = request.headers['sec-fetch-site'];
+    if (method!=='GET' && fetchSite && !['same-origin','none'].includes(fetchSite)) {
+      return send(response,403,{error:'Abra o jogo para realizar esta operação.'});
+    }
+    if(path==='/economy'||path==='/admin/valdoria/economy'){
+      try{
+        const admin=path.startsWith('/admin/');
+        if(admin&&!economy.configured)return send(response,503,{error:'Configure VALDORIA_ADMIN_TOKEN no servidor.'});
+        if(admin&&!economy.authorized(token))return send(response,401,{error:'Token administrativo inválido.'});
+        if(method==='GET')return send(response,200,await economy.read());
+        if(admin&&method==='PUT'){
+          const saved=await economy.save(await body(request));
+          if(saved.invalid)return send(response,400,{error:'Revise os valores das regras da economia.'});
+          if(saved.conflict)return send(response,409,{error:'As regras mudaram em outra sessão. Recarregue antes de salvar.'});
+          return send(response,200,saved);
+        }
+        return send(response,405,{error:'Operação indisponível.'});
+      }catch(error){
+        if(error.name==='MongoServerSelectionError')return send(response,503,{error:'O MongoDB local está indisponível.'});
+        return send(response,error.status||500,{error:error.status?error.message:'Falha ao acessar as regras da economia.'});
+      }
+    }
     if (!known.test(path)) return send(response,404,{error:'Rota indisponível.'});
     try {
-      const fetchSite = request.headers['sec-fetch-site'];
-      if (method!=='GET' && fetchSite && !['same-origin','none'].includes(fetchSite)) {
-        return send(response,403,{error:'Abra o jogo para realizar esta operação.'});
-      }
       const [ , , id, presence ] = path.split('/');
       if (id?.startsWith('npc-') && !presence && method==='GET') {
         const found = npcKingdom(id);
@@ -142,7 +162,8 @@ export function createApi(env=process.env) {
         const mission=findMission(missionId);
         if(!mission)return send(response,404,{error:'Missão indisponível.'});
         const progress=missionProgress(profile.missions);
-        const status=missionStatus(mission,progress.completed,missionStats(profile.state));
+        const {rules}=await economy.read();
+        const status=missionStatus(mission,progress.completed,missionStats(profile.state,rules));
         if(status==='complete')return send(response,200,{progress,duplicate:true});
         if(status!=='ready')return send(response,409,{error:'Conclua os objetivos e as missões anteriores no Reino principal.'});
         const updated=await db.findOneAndUpdate({_id:profile._id,revision:profile.revision,missions:{$ne:mission.id}},

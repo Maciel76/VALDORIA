@@ -1,4 +1,5 @@
 import { catalogue } from './catalog.js';
+import { constructionCost } from './economy-rules.js';
 import { fixedRotation, snapPlacement, getLineCandidate, linePositions, gates, containsPoint, footprint,
   foundationSlopeError, foundationSlopeTarget, landscapeBlocked, landscapeObstacles } from './geometry.js';
 import { edit } from './kingdom.js';
@@ -163,7 +164,7 @@ export class Editor {
     if(this.grading){
       const target=this.state.objects.find(object=>object.id===entry.target?.id);
       const {seed,territory,gold}=this.state;
-      const cost=catalogue.terrainSlope.price;
+      const cost=constructionCost('terrainSlope');
       const reason=foundationSlopeError(target,seed,territory)||(gold<cost?'Moedas insuficientes.':'');
       this.detail={cost,reason,clearPlots:[]};
       this.view?.showSlopePreview(target,Boolean(reason));

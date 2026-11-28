@@ -1,6 +1,9 @@
+import {
+  buildingEconomy,constructionCost,economyRules,MAX_STOCK,maxBuildingLevel,objectLevel,validatedResources
+} from './economy-rules.js';
 import { catalogue } from './catalog.js';
 import { hasTraining, validatedArmy } from './army.js';
-import { buildingUpgrade, buildingYield, canLevel, maxBuildingLevel } from './building-levels.js';
+import { buildingUpgrade, canLevel } from './building-levels.js';
 import { castleTypes, checkPlacement, collidersOverlap, containsPoint, buildingImprovementObstructed, fixedRotation, footprint,
   foundationSlopeError, gates, hasFoundation, INITIAL_HOME_LIMIT, ownsPlot, plotDimensions, residentialCount, worldBoxes } from './geometry.js';
 import {
@@ -11,23 +14,22 @@ import { bounds,directions,expansionOptions,LIMIT,MAX_NATURAL_OBSTACLES,naturalO
 import { usesLots,validLots } from '../world/lots.js';
 import { onVillagePerimeter, validWaterGateId, villageGatePositions, villageWallSections, waterGates } from '../world/perimeter.js';
 
-export const STARTING_GOLD = 5000;
-export const HARVEST_MS = 30000;
+export const harvestInterval = () => economyRules().harvestSeconds*1000;
 export const MAX_OBJECTS = 4200;
 export const times = ['morning','noon','sunset','night'];
 const clampGold = value => Math.max(0,Math.min(1e9,value));
 export const createId = () => Array.from(crypto.getRandomValues(new Uint8Array(12)),value=>value.toString(16).padStart(2,'0')).join('');
 
 export function emptyKingdom(now=Date.now()) {
-  return { version:1, seed:5174, name:'Vale de Valdória', gold:STARTING_GOLD, nextTaxAt:now+HARVEST_MS,
+  return { version:1, seed:5174, name:'Vale de Valdória', gold:economyRules().emptyGold, nextTaxAt:now+harvestInterval(),
     territory: Object.fromEntries(directions.map(direction=>[direction,0])),
     time:'morning', sound:false, quality:'standard', objects:[], removedLandscape:[] };
 }
 
 export function starterKingdom(now=Date.now()){
-  const state={...emptyKingdom(now),gold:1500,territory:{lots:[]}};
+  const state={...emptyKingdom(now),gold:economyRules().starterGold,territory:{lots:[]}};
   state.objects=[{id:'v-0',type:'stockade',x:0,z:-5,rotation:0,wallLevel:1,open:true},
-    ...makeVillageFortifications(state.territory)];
+    ...(economyRules().starterWall?makeVillageFortifications(state.territory):[])];
   return state;
 }
 
@@ -58,26 +60,46 @@ function makeVillageFortifications(territory,legacy=[]){
   return [wall,...entrances];
 }
 
-export function economy(state) {
-  const {homes,jobs} = state.objects.reduce((sum,object)=>{
-    const item = buildingYield(object);
-    sum.homes += item.homes;
-    sum.jobs += item.jobs;
-    return sum;
-  },{homes:0,jobs:0});
-  const filled = Math.min(homes,jobs);
-  return {homes,jobs,filled,income:homes*3+filled*5};
+export function economy(state,rules=economyRules()) {
+  let homes=0,jobs=0,directGold=0,publicOrder=0;
+  const production={};
+  for(const object of state.objects){
+    const rule=buildingEconomy(object.type,objectLevel(object),rules);
+    homes+=rule.homes;
+    jobs+=rule.jobs;
+    directGold+=rule.gold;
+    publicOrder+=rule.publicOrder;
+    if(rule.resource&&rule.quantity)production[rule.resource]=(production[rule.resource]??0)+rule.quantity;
+  }
+  const filled=Math.min(homes,jobs);
+  const {residentGold,jobGold,publicOrderBonus}=rules;
+  const baseIncome=homes*residentGold+filled*jobGold+directGold;
+  const bonusHundredths=Math.floor(publicOrder/100)*Math.round(publicOrderBonus*100);
+  const bonusGold=bonusHundredths?Number(BigInt(baseIncome)*BigInt(bonusHundredths)/10000n):0;
+  return {homes,jobs,filled,income:baseIncome+bonusGold,publicOrder,bonusPercent:bonusHundredths/100,bonusGold,
+    ...(Object.keys(production).length?{production}:{})};
 }
 
 export function collectTax(state,now=Date.now()) {
-  if (now < state.nextTaxAt) return false;
-  state.nextTaxAt += (Math.floor((now-state.nextTaxAt)/HARVEST_MS)+1)*HARVEST_MS;
-  state.gold = clampGold(state.gold + economy(state).income);
+  if(now<state.nextTaxAt)return false;
+  const interval=harvestInterval();
+  state.nextTaxAt+=(Math.floor((now-state.nextTaxAt)/interval)+1)*interval;
+  const {income,production}=economy(state);
+  state.gold=clampGold(state.gold+income);
+  if(production){
+    state.resources??={};
+    for(const [id,amount] of Object.entries(production)){
+      state.resources[id]=Math.min(MAX_STOCK,(state.resources[id]??0)+amount);
+    }
+  }
   return true;
 }
 
-export const expansionCost = (state,direction) => usesLots(state.territory)
-  ? 620+state.territory.lots.length*110 : 670+state.territory[direction]*420;
+export function expansionCost(state,direction){
+  const rules=economyRules();
+  return usesLots(state.territory)?rules.lotCost+state.territory.lots.length*rules.lotIncrease:
+    rules.stripCost+state.territory[direction]*rules.stripIncrease;
+}
 
 export function edit(state, action, player) {
   const fail = error => ({error});
@@ -102,7 +124,7 @@ export function edit(state, action, player) {
   switch (action.kind) {
     case 'buy-village-wall': {
       if (state.objects.some(isVillageWall)) return fail('A vila já tem uma muralha.');
-      const cost=catalogue.villageWall.price;
+      const cost=constructionCost('villageWall');
       if (state.gold<cost) return fail('Moedas insuficientes.');
       const perimeter=makeVillageFortifications(state.territory);
       if (state.objects.some(isPerimeterPiece)) return fail('O perímetro existente precisa ser atualizado.');
@@ -124,7 +146,7 @@ export function edit(state, action, player) {
       }
       if (action.points.some(point=>point.type==='villageWall')) return fail('Compre a muralha inteira na loja.');
       if (action.points.some(point=>point.type==='terrainSlope')) return fail('Escolha a base que vai receber o talude.');
-      const items = [], cost = action.points.reduce((sum,p)=>sum+catalogue[p.type].price,0);
+      const items = [], cost = action.points.reduce((sum,p)=>sum+constructionCost(p.type),0);
       if (state.gold<cost) return fail('Moedas insuficientes.');
       for (const point of action.points) {
         const object = {type:point.type,x:point.x,z:point.z,id:createId(),rotation:fixedRotation(point.rotation)};
@@ -137,7 +159,7 @@ export function edit(state, action, player) {
       return apply({add:items,gold:-cost});
     }
     case 'landscape-foundation': {
-      const object=find(), cost=catalogue.terrainSlope.price;
+      const object=find(), cost=constructionCost('terrainSlope');
       const reason=foundationSlopeError(object,state.seed,state.territory);
       if(reason)return fail(reason);
       if(state.gold<cost)return fail('Moedas insuficientes.');
@@ -283,8 +305,8 @@ export function validatedKingdom(value) {
         (gates.has(type) && typeof open!=='boolean') ||
         (wallLevel!==undefined && (!Number.isInteger(wallLevel)||wallLevel<1||
           wallLevel>maxFortificationLevel({id,type})||!fortificationRole({id,type}))) ||
-        (level!==undefined && (!canLevel(type)||!Number.isInteger(level)||level<1||level>maxBuildingLevel(type)||
-          (type==='stockade'&&level>1&&wallLevel!==2)))) return null;
+        (level!==undefined && ((!canLevel(type)&&!catalogue[type].purchasable)||!Number.isInteger(level)||
+          level<1||level>maxBuildingLevel(type)||(type==='stockade'?level>1&&wallLevel!==2:Boolean(fortificationRole({id,type})))))) return null;
     ids.add(id);
     const object={id,type,x,z,rotation,...(gates.has(type)?{open}:{}),
       ...(wallLevel===undefined?{}:{wallLevel}),...(level===undefined?{}:{level}),...(landscaped?{landscaped}:{})};
@@ -292,7 +314,7 @@ export function validatedKingdom(value) {
     if((expandedSanctuary||lots&&!isFixedFortification(object))&&!ownsPlot(value.territory,footprint(object)))return null;
     objects.push(object);
   }
-  if(lots&&(!ids.has(villageWallId)||(!value.territory.lots.length&&residentialCount(objects)>INITIAL_HOME_LIMIT)))return null;
+  if(lots&&!value.territory.lots.length&&residentialCount(objects)>INITIAL_HOME_LIMIT)return null;
   if (ids.has(villageWallId)){
     const positions=villageGatePositions(value.territory);
     const byId=new Map(objects.map(object=>[object.id,object]));
@@ -314,6 +336,8 @@ export function validatedKingdom(value) {
     new Set(closed).size!==closed.length||!closed.every(validWaterGateId)))return null;
   const army=value.army===undefined?undefined:validatedArmy(value.army,objects);
   if(army===null)return null;
+  const resources=value.resources===undefined?undefined:validatedResources(value.resources);
+  if(resources===null)return null;
   return {
     version:1, seed:value.seed, name:value.name.trim(), gold:value.gold, nextTaxAt:value.nextTaxAt,
     time:value.time, sound:value.sound, quality:value.quality,
@@ -321,6 +345,7 @@ export function validatedKingdom(value) {
     objects, removedLandscape:[...removedLandscape],
     ...(army?{army}:{}),
     ...(closed?.length?{closedWaterGates:[...closed]}:{}),
+    ...(resources===undefined?{}:{resources}),
     ...(value.starterPerimeter===true?{starterPerimeter:true}:{})
   };
 }
