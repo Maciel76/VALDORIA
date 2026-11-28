@@ -15,7 +15,8 @@ import { LOT_SIZE,usesLots } from './world/lots.js';
 import { SaveManager } from './storage/saves.js';
 import { profile,refreshAccount,request,setProfile } from './storage/account.js';
 import { collectTax, expansionCost, upgradeStarter, validatedKingdom } from './core/kingdom.js';
-import { buildingUpgrade } from './core/building-levels.js';
+import { buildingLevel, buildingUpgrade } from './core/building-levels.js';
+import { completeTraining, getTroop, trainTroop, troopRanges, troopTypes } from './core/army.js';
 import { findMission, missionProgress, missionStats, missionStatus } from './core/missions.js';
 import { castleTypes, gates } from './core/geometry.js';
 import { fortificationUpgrade,isFixedFortification,isVillageWall,villageWallId } from './core/fortifications.js';
@@ -42,6 +43,11 @@ let state, slot=['own','starter','empty','demo','backup'].includes(previousSlot)
 let guest=null, locked=false, lastMini=0, lastAim=0;
 let territoryDirection=null;
 let progress=missionProgress(), selectedMission=null;
+let armyUnit=null, armyFilter='all';
+
+function renderArmy(barracks,amount=1) {
+  hud.showArmy(state,barracks,armyUnit,armyFilter,amount);
+}
 
 function changed({modified=false,created=[],refreshRoutes=true}={}) {
   if(!active())return;
@@ -144,6 +150,7 @@ async function connectProfile({render=true,notify=true}={}) {
     else {
       const next=upgradeStarter(remote);
       if(render)await prepareModels(next.objects);
+      if(hud.armyOpen)hud.popup.close();
       state=next;editor.start(state);
       if(render){cameraMode('orbit');view?.navigation.overview(state);changed();}
     }
@@ -320,6 +327,50 @@ async function action(which,value) {
         hud.popup.close();
         editor.select(value);
         hud.notify(`Construção melhorada para o nível ${upgrade.level}.`);
+      }
+      break;
+    }
+    case 'train': {
+      const barracks=editor.selected;
+      if(guest||barracks?.type!=='barracks')break;
+      if(document.pointerLockElement)document.exitPointerLock();
+      view?.navigation.keys.clear();
+      if(completeTraining(state))saves.save(state);
+      armyUnit=troopTypes[buildingLevel(barracks)-1];
+      armyFilter='all';
+      renderArmy(barracks);
+      break;
+    }
+    case 'army-unit':
+    case 'army-filter':
+    case 'train-unit': {
+      const barracks=editor.selected;
+      if(guest||!hud.armyOpen||barracks?.type!=='barracks')break;
+      if(which==='army-unit'){
+        const unit=getTroop(value);
+        if(!unit)break;
+        armyUnit=unit;
+      }else if(which==='army-filter'){
+        if(value!=='all'&&!Object.hasOwn(troopRanges,value))break;
+        armyFilter=value;
+        if(value!=='all'&&armyUnit.range!==value){
+          const matches=troopTypes.filter(unit=>unit.range===value);
+          armyUnit=matches.findLast(unit=>unit.level<=buildingLevel(barracks))??matches[0];
+        }
+      }else{
+        const amount=hud.popup.querySelector('#army-amount')?.valueAsNumber;
+        const completed=completeTraining(state);
+        const error=trainTroop(state,barracks.id,value,amount);
+        if(completed||!error)saves.save(state);
+        if(error){if(completed)renderArmy(barracks,amount||1);tell(error);break;}
+        updateHUD();
+        renderArmy(barracks,amount);
+        tell(`Treinamento iniciado. ${amount}× ${getTroop(value).name}.`);
+        break;
+      }
+      renderArmy(barracks);
+      if(which==='army-unit'&&matchMedia('(max-width: 720px)').matches){
+        hud.popup.querySelector('.army-detail').scrollIntoView({block:'nearest'});
       }
       break;
     }
@@ -546,8 +597,16 @@ document.addEventListener('visibilitychange',()=>{
 
 setInterval(()=>{
   if(document.hidden||root.dataset.ready!=='true'||guest)return;
-  if(collectTax(state)){updateHUD();audio.harvest();saves.save(state);}
+  const taxed=collectTax(state), trained=completeTraining(state);
+  if(taxed){updateHUD();audio.harvest();}
   else hud.tax(state);
+  if(taxed||trained)saves.save(state);
+  if(hud.armyOpen){
+    if(trained&&editor.selected?.type==='barracks'){
+      const amount=hud.popup.querySelector('#army-amount')?.valueAsNumber;
+      renderArmy(editor.selected,amount||1);
+    }else hud.updateArmy(state);
+  }
 },1000);
 setInterval(async ()=>{
   if(document.hidden || !guest || !view || !saves.account || !saves.online) return;
@@ -578,6 +637,7 @@ async function initialize() {
   state=slot==='own'?upgradeStarter(loaded):loaded;
   editor.start(state);hud.saved('Salvo neste navegador');
   await connectProfile({render:false,notify:!target});
+  completeTraining(state);
   if(!saves.conflicted)await saves.save(state);
   if(target){
     try {

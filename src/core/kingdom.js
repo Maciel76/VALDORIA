@@ -1,4 +1,5 @@
 import { catalogue } from './catalog.js';
+import { hasTraining, validatedArmy } from './army.js';
 import { buildingUpgrade, buildingYield, canLevel, maxBuildingLevel } from './building-levels.js';
 import { castleTypes, checkPlacement, collidersOverlap, containsPoint, buildingImprovementObstructed, fixedRotation, footprint,
   foundationSlopeError, gates, hasFoundation, INITIAL_HOME_LIMIT, ownsPlot, plotDimensions, residentialCount, worldBoxes } from './geometry.js';
@@ -153,6 +154,7 @@ export function edit(state, action, player) {
     case 'remove': {
       const object = find();
       if (isFixedFortification(object)) return fail('Esta estrutura faz parte do perímetro da vila.');
+      if(object?.type==='barracks'&&hasTraining(state,object.id))return fail('Aguarde o treinamento terminar para remover o quartel.');
       return object ? apply({remove:[object]}) : fail('Construção indisponível.');
     }
     case 'clear-landscape': {
@@ -233,6 +235,10 @@ export function edit(state, action, player) {
       return state.gold < cost ? fail('Moedas insuficientes.') : apply({gold:-cost,direction:action.direction,change:1});
     }
     case 'undo': {
+      if(action.change.remove?.some(object=>hasTraining(state,object.id)&&
+        !action.change.add?.some(replacement=>replacement.id===object.id))){
+        return fail('Aguarde o treinamento terminar para remover o quartel.');
+      }
       if(action.change.restoreWaterGates){
         state.closedWaterGates=action.change.restoreWaterGates;
         return {objects:[]};
@@ -306,11 +312,14 @@ export function validatedKingdom(value) {
   const closed=value.closedWaterGates;
   if(closed!==undefined&&(!Array.isArray(closed)||closed.length>1024||
     new Set(closed).size!==closed.length||!closed.every(validWaterGateId)))return null;
+  const army=value.army===undefined?undefined:validatedArmy(value.army,objects);
+  if(army===null)return null;
   return {
     version:1, seed:value.seed, name:value.name.trim(), gold:value.gold, nextTaxAt:value.nextTaxAt,
     time:value.time, sound:value.sound, quality:value.quality,
     territory:lots?{lots:[...value.territory.lots]}:Object.fromEntries(directions.map(direction=>[direction,value.territory[direction]])),
     objects, removedLandscape:[...removedLandscape],
+    ...(army?{army}:{}),
     ...(closed?.length?{closedWaterGates:[...closed]}:{}),
     ...(value.starterPerimeter===true?{starterPerimeter:true}:{})
   };

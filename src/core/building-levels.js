@@ -48,8 +48,13 @@ const churchStyles=[
   'Igreja das Duas Torres','Igreja do Claustro','Basílica das Arcadas','Basílica da Coroa',
   'Catedral de Valdória','Catedral Imperial',
 ];
+const barracksStyles=[
+  'Quartel da guarda','Pátio dos fundibulários','Campo dos arqueiros','Quartel dos lanceiros',
+  'Fortim dos besteiros','Academia do arco','Quartel da guarda real','Fortaleza dos instrutores',
+  'Academia da Coroa','Academia Imperial',
+];
 const detailedStyles={watch:watchStyles,farm:farmStyles,noble:nobleStyles,market:marketStyles,
-  watermill:watermillStyles,windmill:windmillStyles,chapel:chapelStyles,church:churchStyles};
+  watermill:watermillStyles,windmill:windmillStyles,chapel:chapelStyles,church:churchStyles,barracks:barracksStyles};
 export const isHousing = type => catalogue[type]?.category==='housing';
 export const maxBuildingLevel = type => type==='stockade'||Object.hasOwn(detailedStyles,type)||isHousing(type)?10:MAX_BUILDING_LEVEL;
 export const canLevel = type => buildings.has(catalogue[type]?.category) || ['squareTower','roundTower'].includes(type);

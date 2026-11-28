@@ -177,7 +177,7 @@ export async function loadBuildingUpgrade(object){
   if(object.type==='stockade'&&buildingLevel(object)===2)return templates.has('stockade')&&fortificationKits.has(2);
   const variant=modelVariant(object);
   return variant?templates.has(variant):!isHousing(object.type)&&
-    !['stockade','watch','farm','market','watermill','windmill','chapel','church'].includes(object.type);
+    !['stockade','watch','farm','market','watermill','windmill','chapel','church','barracks'].includes(object.type);
 }
 
 export async function loadFortificationKit(level){

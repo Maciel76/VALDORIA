@@ -35,3 +35,5 @@ O script `build_watermills.py` gera a cena `moinhos-dagua-niveis-1-a-10.blend` e
 O script `build_windmills.py` gera a cena `moinhos-de-vento-niveis-1-a-10.blend` e os modelos `windmill-nivel-*.glb`. Cada modelo exporta um eixo `windmillRotor` para o giro das pás, com espaço para a rotação no lote de 9 × 9 m.
 
 O script `build_sanctuaries.py` reúne as duas linhas de dez construções em `capelas-niveis-1-a-10.blend` e `igrejas-niveis-1-a-10.blend`. Ele mantém os modelos originais no nível 1 e exporta as ampliações em `chapel-nivel-*.glb` e `church-nivel-*.glb`. O arquivo `src/core/sanctuary-layouts.json` registra a área e as colisões de cada nível.
+
+O script `build_barracks.py` gera os dez pátios de treinamento, a cena editável `quarteis-niveis-1-a-10.blend` e os modelos `barracks-nivel-*.glb`. O script `build_troop_portraits.py` gera a cena `tropas-de-valdoria.blend` e dez retratos originais usados pelo painel do quartel em `public/tropas`.

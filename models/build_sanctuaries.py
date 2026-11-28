@@ -454,7 +454,7 @@ def build():
     layout=ROOT/'src'/'core'/'sanctuary-layouts.json'
     layout.write_text('{\n  "chapel": [\n'+',\n'.join('    '+json.dumps(entry) for entry in chapel)+
                       '\n  ],\n  "church": [\n'+',\n'.join('    '+json.dumps(entry) for entry in church)+
-                      '\n  ]\n}\n',encoding='utf8')
+                      '\n  ]\n}\n',encoding='utf8',newline='\r\n')
 
 
 if __name__=='__main__':

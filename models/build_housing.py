@@ -575,7 +575,8 @@ def material(color):
 
 
 def stage_surface(scene,titles=TITLES,kind='Moradia',pad=(8.65,7.68),
-                  columns=10.35,rows=12.85,scale=54.8,target_height=3.20,resolution_y=992,label_scale=1):
+                  columns=10.35,rows=12.85,scale=54.8,target_height=3.20,resolution_y=992,
+                  label_scale=1,label_clearance=0):
     props=bpy.data.collections.new('Estúdio · '+kind)
     scene.collection.children.link(props)
     camera=bpy.data.cameras.new('Prancha · '+kind)
@@ -602,7 +603,7 @@ def stage_surface(scene,titles=TITLES,kind='Moradia',pad=(8.65,7.68),
             rig.box('#56633c',0,0,-.184,*pad,.37)
             rig.box('#6d8050',0,0,-.035,pad[0]-.13,pad[1]-.12,.074)
         label_lift=.90*(label_scale-1)
-        anchor=origin-back*(pad[1]/2+2.0*label_scale+label_lift*1.42)
+        anchor=origin-back*(pad[1]/2+2.0*label_scale+label_lift*1.42+label_clearance)
         for text_content,size,color,height in ((f'NÍVEL {index+1:02}',.54,'#d7ac68',.48),
                                                (title,.68,'#f0e4cc',-.35)):
             text=bpy.data.curves.new(text_content,'FONT')

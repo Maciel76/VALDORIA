@@ -335,6 +335,75 @@ input:not([type=checkbox]),select {
 .lot-picker { display: flex; align-items: center; gap: 8px; padding: 7px 12px; font-size: 12px; }
 .lot-picker select { min-width: 110px; padding: 4px; }
 .dialog-message { margin: 8px 12px; padding: 7px 8px; background: #dfc18e70; border: 1px solid #bea173; border-radius: 4px; font-size: 12px; }
+.army-panel { width: 1000px; }
+.army-shell { padding: 14px 20px 20px; }
+.army-summary { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 5px 16px; padding: 0 0 13px; }
+.army-summary > div { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; }
+.army-summary strong { font: 650 26px/1 var(--serif); }
+.army-summary span { font-size: 12px; color: #664e34; }
+.army-summary > span { display: flex; align-items: center; gap: 5px; }
+.army-summary svg { width: 17px; height: 17px; }
+.army-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(215px, .42fr); gap: 17px; }
+.army-filters { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 9px; }
+.army-filters button {
+  border: 1px solid #a98d62; background: #f5e8cda8; color: var(--ink);
+  border-radius: 3px; padding: 6px 9px; line-height: 1.2;
+  font-size: 11px; font-weight: 650;
+}
+.army-filters button[aria-pressed="true"] { background: #493323; border-color: #493323; color: #fbefd3; }
+.army-cards { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 7px; }
+.army-card {
+  display: grid; grid-template-rows: auto 1fr; border: 1px solid #a88b60; border-radius: 4px;
+  overflow: hidden; padding: 0; background: #f6e9cf; color: var(--ink); text-align: left;
+}
+.army-card:hover { border-color: #6b4b2f; background: #f9edcf; }
+.army-card[aria-pressed="true"] { outline: 2px solid #814132; outline-offset: -2px; background: #f5daa9; }
+.army-portrait { display: block; position: relative; aspect-ratio: 6 / 6.7; background: #282424; overflow: hidden; }
+.army-portrait img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: center 40%; }
+.army-card.locked img { filter: saturate(.72) brightness(.81); }
+.army-rank {
+  position: absolute; bottom: 4px; left: 4px; display: flex; align-items: center; gap: 3px; padding: 3px 5px;
+  color: #f9ebcd; background: #211b16eb; border: 1px solid #c8a368; border-radius: 3px;
+  font-size: 10px; font-weight: 700; line-height: 1;
+}
+.army-rank svg { width: 10px; height: 10px; }
+.army-card-title { display: grid; gap: 3px; align-content: start; padding: 5px 6px 7px; }
+.army-card-title strong { font: 690 17px/.98 var(--serif); overflow-wrap: anywhere; }
+.army-card-title small { color: #72563e; font-size: 9px; line-height: 1.15; }
+.army-recruitment { display: grid; align-content: start; gap: 8px; }
+.army-detail,.army-queue { background: #f8e9c94d; border: 1px solid #b9a078; border-radius: 4px; padding: 12px; }
+.army-detail h3,.army-queue h3 { font: 680 24px/.95 var(--serif); margin: 0 0 6px; }
+.army-detail p,.army-queue p { margin: 0; color: #674d35; font-size: 11px; line-height: 1.35; }
+.army-stats { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 4px; margin: 11px 0; }
+.army-stats > div { padding: 6px 4px; background: #b8956030; text-align: center; border-radius: 3px; }
+.army-stats dt { font-size: 10px; color: #655139; }
+.army-stats dd { margin: 0; font: 690 23px/1 var(--serif); }
+.army-amount { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 12px; margin-bottom: 7px; }
+.army-amount input { width: 62px; }
+.army-detail .primary { width: 100%; justify-content: center; }
+.army-detail .army-time { margin: 5px 0 0; text-align: center; }
+.army-detail .army-lock { display: flex; gap: 5px; }
+.army-lock svg { flex: 0 0 14px; height: 14px; }
+.army-queue ul,.army-queue ol { margin: 0; padding: 0; list-style: none; font-size: 11px; }
+.army-queue li { display: flex; justify-content: space-between; gap: 5px; padding: 4px 0; border-top: 1px solid #c5ad8580; }
+.army-queue time { color: #765133; white-space: nowrap; }
+.army-unlock {
+  display: flex; align-items: center; gap: 9px; border: 1px solid #b69a6b; background: #f4e3b86b;
+  border-radius: 4px; padding: 6px; margin-block: 8px;
+}
+.army-unlock img { border-radius: 2px; object-fit: cover; }
+.army-unlock strong,.army-unlock small { display: block; }
+.army-unlock strong { font: 680 22px/1 var(--serif); }
+.army-unlock small { font-size: 11px; }
+@media (max-width: 720px) {
+  .army-layout { grid-template-columns: 1fr; gap: 11px; }
+  .army-recruitment { grid-row: 1; grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .army-detail { grid-column: 1/-1; }
+  .army-shell { padding: 12px; }
+}
+@media (max-width: 520px) {
+  .army-cards { grid-template-columns: repeat(3,minmax(0,1fr)); }
+}
 .no-webgl { position: absolute; inset: 40% 20% auto; text-align: center; padding: 16px; z-index: 2; }
 @media (max-width: 1040px) {
   .map-inset { right: 15px; width: 151px; }

@@ -13,6 +13,8 @@ import { drawMinimap } from './atlas-art.js';
 import { fillThumbnails } from './previews.js';
 import { escapeHTML } from './html.js';
 import { missionBook } from './mission-book.js';
+import { troopTypes, troopRanges } from '../core/army.js';
+import { armyPanel, duration, troopImage } from './army-panel.js';
 
 const fmt = new Intl.NumberFormat('pt-BR');
 const residentLabel = count => `${fmt.format(count)} ${count===1?'morador':'moradores'}`;
@@ -100,6 +102,9 @@ export class HUD {
     refreshIcons();
   }
   bind(handle) {
+    this.popup.addEventListener('input',event=>{
+      if(event.target.id==='army-amount')this.updateArmyPrice();
+    });
     this.popup.addEventListener('change',event=>{
       if(event.target.id==='expansion-lot')handle('preview-expansion',event.target.value,event);
     });
@@ -306,6 +311,7 @@ export class HUD {
       ];
       if(gates.has(object.type))actions.unshift(['gate',object.open?'Fechar portão':'Abrir portão',object.open?'door-closed':'door-open']);
       if(upgrade)actions.unshift(['show-building-upgrade',`Melhorar para o nível ${upgrade.level}`,'arrow-up-circle']);
+      if(object.type==='barracks')actions.unshift(['train','Treinar tropas','swords']);
       this.selection.innerHTML=summary+actions.map(([action,label,symbol],index)=>
         tool(action,label,symbol,`style="--angle:${index*360/actions.length}deg"`)).join('');
     }
@@ -371,16 +377,56 @@ export class HUD {
     }
     const title={stockade:'Melhorar castelo',watch:'Melhorar torre de vigia',farm:'Melhorar fazenda',
       market:'Melhorar mercado',watermill:'Melhorar moinho d’água',windmill:'Melhorar moinho de vento',
-      chapel:'Melhorar capela',church:'Melhorar igreja'}[item.id] ??
+      chapel:'Melhorar capela',church:'Melhorar igreja',barracks:'Melhorar quartel'}[item.id] ??
       (isHousing(item.id)?'Melhorar moradia':'Melhorar construção');
+    const unit=item.id==='barracks'?troopTypes[upgrade.level-1]:null;
     this.modal(title,`<div class="building-upgrade">
       <h3>${name}</h3><p>Nível ${buildingLevel(object)} → ${upgrade.level}</p>
       ${style?`<p><strong>${style}</strong></p>`:''}
       ${changes.length?`<div class="upgrade-effects">${changes.join('')}</div>`:''}
+      ${unit?`<div class="army-unlock"><img src="${troopImage(unit)}" width="52" height="60" alt=""><div>
+        <small>Unidade desbloqueada</small><strong>${unit.name}</strong><small>${troopRanges[unit.range]}</small></div></div>`:''}
       ${gold<upgrade.cost?'<p class="upgrade-warning">Moedas insuficientes.</p>':''}
       ${button('upgrade-building',`Melhorar por ${fmt.format(upgrade.cost)} de ouro`,'coins',
         `class="primary" data-value="${object.id}" ${gold<upgrade.cost?'disabled':''}`)}
     </div>`);
+  }
+  get armyOpen() {
+    return this.popup.open&&this.popup.classList.contains('army-panel');
+  }
+  showArmy(state,barracks,unit,filter,amount=1) {
+    const focused=this.armyOpen?document.activeElement:null;
+    const scroll=this.armyOpen?this.popup.scrollTop:0;
+    this.modal('Treinar tropas',armyPanel(state,barracks,unit,filter,amount),'army-panel');
+    this.updateArmy(state);
+    if(focused?.id==='army-amount'){
+      this.popup.querySelector('#army-amount')?.focus({preventScroll:true});
+    }else if(focused?.dataset.action){
+      const same=[...this.popup.querySelectorAll('button[data-action]')].find(button=>
+        button.dataset.action===focused.dataset.action&&button.dataset.value===focused.dataset.value);
+      (same??this.popup.querySelector('[data-action="army-unit"][aria-pressed="true"]'))?.focus({preventScroll:true});
+    }
+    this.popup.scrollTop=scroll;
+  }
+  updateArmy(state) {
+    const now=Date.now();
+    this.armyGold=state.gold;
+    for(const counter of this.popup.querySelectorAll('[data-ready-at]')){
+      counter.textContent=duration(Math.max(0,Math.ceil((Number(counter.dataset.readyAt)-now)/1000)));
+    }
+    this.updateArmyPrice();
+  }
+  updateArmyPrice() {
+    const field=this.popup.querySelector('#army-amount');
+    if(!field)return;
+    const button=this.popup.querySelector('[data-action="train-unit"]');
+    const count=field.valueAsNumber;
+    const cost=count*Number(button.dataset.cost);
+    const price=this.popup.querySelector('#army-cost'),time=this.popup.querySelector('#army-time');
+    price.textContent=field.validity.valid?fmt.format(cost):'—';
+    button.disabled=!field.validity.valid||cost>this.armyGold;
+    time.textContent=!field.validity.valid?'Escolha entre 1 e 20 soldados.':
+      cost>this.armyGold?'Moedas insuficientes.':`${duration(count*Number(button.dataset.seconds))} de treinamento`;
   }
   get missionsOpen() {
     return this.popup.open&&this.popup.classList.contains('mission-book');

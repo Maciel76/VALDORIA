@@ -7,6 +7,7 @@ import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { catalogue, terrainPaving } from '../src/core/catalog.js';
 import { riverBridgeDeck,sluiceAngle,sluiceBottom,sluiceLeafHeight,sluicePlane } from '../src/core/water-structures.js';
 import { buildingLevel, buildingStyle, buildingUpgrade } from '../src/core/building-levels.js';
+import { completeTraining, countTroops, trainTroop, troopTypes } from '../src/core/army.js';
 import { findMission, missionProgress, missionStats, missionStatus } from '../src/core/missions.js';
 import { fortificationLevel,isVillageGate,isVillageWall,villageWallId } from '../src/core/fortifications.js';
 import { lakeGateId,villageGatePositions,villagePerimeterBounds,villageWallSections,waterGates,worldObjects } from '../src/world/perimeter.js';
@@ -1077,6 +1078,63 @@ test('a ampliação de uma igreja respeita construções existentes, limites e a
   assert.equal(preview,'Fora do território.');
   assert.match(edit({...state,objects:[large]},{kind:'move',x:168,z:0,rotation:0,id:large.id}).error,
     /Fora do território/);
+});
+
+test('os dez quartéis continuam no lote e cada melhoria desbloqueia uma tropa mais forte com retrato',async()=>{
+  const loader=new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
+  const state=stateWith(piece('barracks',0,0));
+  state.gold=30000;
+  const ranges=new Set();
+  let previousPower=0,previousDefense=0;
+  for(const unit of troopTypes){
+    const {id,level,power,defense,range}=unit;
+    assert.equal(buildingLevel(state.objects[0]),level);
+    assert.ok(power>previousPower&&defense>previousDefense);
+    previousPower=power;previousDefense=defense;ranges.add(range);
+    const model=await readFile(new URL(`../src/assets/barracks-nivel-${level}.glb`,import.meta.url));
+    const {scene}=await loader.parseAsync(Uint8Array.from(model).buffer,'');
+    const {min,max}=new Box3().setFromObject(scene,true);
+    assert.ok(min.x>=-7&&max.x<=7&&min.z>=-5.5&&max.z<=5.5);
+    const portrait=await readFile(new URL(`../public/tropas/${id}.png`,import.meta.url));
+    assert.equal(portrait.toString('ascii',1,4),'PNG');
+    assert.equal(trainTroop(state,'barracks',id,1,10_000),'');
+    completeTraining(state,10_000+unit.seconds*1000);
+    if(level===10)break;
+    assert.match(trainTroop(state,'barracks',troopTypes[level].id,1),/nível/);
+    assert.equal(edit(state,{kind:'upgrade-building',id:'barracks'}).error,undefined);
+  }
+  assert.equal(countTroops(state),10);
+  assert.deepEqual([...ranges],['melee','medium','long']);
+  assert.equal(buildingUpgrade(state.objects[0]),null);
+});
+
+test('a fila de tropas é sequencial por quartel, persiste e credita cada ordem uma vez',()=>{
+  const first=piece('barracks',0,0),second=piece('barracks',25,0,0,'second',{level:2});
+  const state=stateWith(first,second);
+  const now=25_000;
+  assert.match(trainTroop(state,first.id,'slinger',1,now),/nível 2/);
+  assert.match(trainTroop(state,first.id,'recruit',21,now),/1 e 20/);
+  assert.equal(state.army,undefined);
+  assert.equal(trainTroop(state,first.id,'recruit',2,now),'');
+  assert.equal(trainTroop(state,first.id,'recruit',1,now),'');
+  assert.equal(trainTroop(state,second.id,'slinger',1,now),'');
+  assert.equal(state.gold,4859);
+  assert.deepEqual(state.army.orders.map(order=>order.readyAt),[35_000,40_000,31_000]);
+  assert.match(edit(state,{kind:'remove',id:first.id}).error,/treinamento/);
+  assert.match(edit(state,{kind:'undo',change:{remove:[first]}}).error,/treinamento/);
+  assert.equal(validatedKingdom({...state,objects:[first]}),null);
+  const reordered=structuredClone(state);
+  reordered.army.orders.reverse();
+  assert.equal(validatedKingdom(reordered),null);
+  const restored=validatedKingdom(structuredClone(state));
+  assert.deepEqual(restored,state);
+  assert.equal(completeTraining(restored,31_000),true);
+  assert.equal(countTroops(restored),1);
+  assert.equal(completeTraining(restored,31_000),false);
+  assert.equal(completeTraining(restored,40_000),true);
+  assert.deepEqual(restored.army,{reserve:{slinger:1,recruit:3},orders:[]});
+  assert.equal(edit(restored,{kind:'remove',id:first.id}).error,undefined);
+  assert.equal(countTroops(validatedKingdom(restored)),4);
 });
 
 test('as pás dos dez moinhos de vento giram sem sair do lote',async()=>{

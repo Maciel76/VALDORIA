@@ -275,7 +275,7 @@ export class Editor {
     this.history.push(result.undo);
     if(this.history.length>100)this.history.shift();
     const reveal=action.kind==='place'||(action.kind==='upgrade-building'&&
-      result.objects.some(o=>['market','watermill','windmill','chapel','church'].includes(o.type)));
+      result.objects.some(o=>['market','watermill','windmill','chapel','church','barracks'].includes(o.type)));
     this.onChange({modified:true,created:reveal?result.objects.map(o=>o.id):[]});
     return result;
   }

@@ -117,7 +117,13 @@ function localBoxes(object) {
     case 'chapel': return sanctuaryLayout(object).colliders;
     case 'abbey': return [box(-8,0,5,15),box(8,0,5,15),box(0,-6,12,5)];
     case 'manor': return [box(0,-2,8,7),box(-6,-1,4,8),box(6,-1,4,8)];
-    case 'barracks': return [box(0,-2,w-1,5)];
+    case 'barracks': {
+      const level=buildingLevel(object);
+      const buildings=[box(0,-2.47,level>2?6.72:5.5,3.52)];
+      if(level>=2)buildings.push(box(-4.99,-2.24,level>4?2.65:2.12,level>4?2.84:2.44));
+      if(level>=3)buildings.push(box(4.99,-2.24,level>4?2.65:2.12,level>4?2.84:2.44));
+      return [...buildings,box(-6.51,2.62,.22,4.96),box(6.51,2.62,.22,4.96)];
+    }
     case 'arch': return [box(-w/2+.18,0,.36,.6),box(w/2-.18,0,.36,.6)];
     case 'steps':
     case 'villageWall': return [];

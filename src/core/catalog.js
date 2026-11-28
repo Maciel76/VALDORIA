@@ -45,7 +45,7 @@ const byCategory = {
     ['church','Igreja de pedra',720,14,19,'Igreja de rosácea que evolui até a Catedral Imperial. As melhorias maiores exigem espaço livre.',0,7],
     ['abbey','Mosteiro',980,24,19,'Alojamentos em alas de pedra em torno de um claustro aberto.',12,10],
     ['council','Casa do conselho',590,13,11,'Um salão público com pórtico e estandarte.',0,7],
-    ['barracks','Quartel da guarda',520,14,11,'Alojamento da guarda com pátio de treino.',10,10],
+    ['barracks','Quartel da guarda',520,14,11,'Treina tropas no pátio de armas. Cada nível do quartel libera uma unidade.',10,10],
     ['stable','Estábulo',330,12,8,'Cobertura ampla para cavalos e carroças.',0,5],
     ['watch','Torre de vigia',300,6,6,'Posto de observação que evolui da madeira até a torre imperial.',0,3]
   ],
