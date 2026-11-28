@@ -41,7 +41,7 @@ const byCategory = {
     ['keep','Grande castelo',2300,34,34,'Fortaleza com salão, torres, pátio e ponte levadiça.',0,15]
   ],
   walls: [
-    ['villageWall','Muralha da vila',1200,0,0,'Cerca todo o território com uma muralha de nível 1 e três portões.'],
+    ['villageWall','Muralha da vila',1200,0,0,'Cerca todo o território com uma muralha de nível 1 e portões.'],
     ['wall','Muralha reta',48,4,2,'Trecho de pedra com ameias. Permite construir em linha.'],
     ['wallShort','Muralha curta',36,3,1.4,'Trecho de três metros para completar encaixes perto de torres e esquinas.'],
     ['corner','Muralha de canto',64,4,4,'Trecho em ângulo para unir duas muralhas.'],

@@ -1,3 +1,4 @@
+import { constructionCost } from './economy-rules.js';
 import { catalogue } from './catalog.js';
 import { isPerimeterPiece,isVillageWall } from './fortifications.js';
 import { onVillagePerimeter,worldObjects } from '../world/perimeter.js';
@@ -292,6 +293,6 @@ export function getLineCandidate(state, item, points, options) {
     failures.push(reason);
     if (!reason) staged.push(candidate);
   }
-  return { staged, failures, total: points.length * item.price };
+  return { staged, failures, total: points.length * constructionCost(item.id) };
 }
 

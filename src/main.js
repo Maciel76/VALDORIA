@@ -12,10 +12,12 @@ import { BAND,expansionBounds,expansionOptions } from './world/terrain-data.js';
 import { LOT_SIZE,usesLots } from './world/lots.js';
 import { SaveManager,profile,recoverProfile,register,request } from './storage/saves.js';
 import { collectTax, expansionCost, upgradeStarter, validatedKingdom } from './core/kingdom.js';
+import { setEconomyRules,objectLevel } from './core/economy-rules.js';
 import { castleTypes, gates } from './core/geometry.js';
 import { isFixedFortification,isVillageWall,villageWallId } from './core/fortifications.js';
 import { Editor } from './core/editor.js';
 
+const initialEconomy=request('/economy',{token:null,timeout:20000}).catch(()=>null);
 const root = document.querySelector('#app');
 const hud = new HUD(root);
 const atlas = new Atlas(root.querySelector('#atlas'));
@@ -36,6 +38,24 @@ const previousSlot=localStorage.getItem(SLOT_KEY);
 let state, slot=['own','starter','empty','demo','backup'].includes(previousSlot)?previousSlot:'own';
 let guest=null, locked=false, refreshBusy=false, lastMini=0, lastAim=0;
 let territoryDirection=null;
+let economyRevision=-1;
+const economyCache='reino-valdoria-economy';
+
+async function refreshEconomy(pending){
+  try{
+    const snapshot=await (pending??request('/economy',{token:null,timeout:15000}));
+    if(!snapshot||snapshot.revision<=economyRevision||!setEconomyRules(snapshot.rules))return;
+    economyRevision=snapshot.revision;
+    try{localStorage.setItem(economyCache,JSON.stringify(snapshot.rules));}catch{}
+    hud.renderCategory();
+    if(!state)return;
+    if(editor.selection)editor.select(editor.selection.id);
+    editor.updatePreview();
+    changed();
+  }catch{
+    // The game can continue with its last known rules when the server is unavailable.
+  }
+}
 
 function changed({modified=false,created=[],refreshRoutes=true}={}) {
   if(!active())return;
@@ -224,7 +244,7 @@ async function action(which,value) {
           cameraMode('orbit');
           view?.navigation.focusVillageWall(state.territory);
           editor.select(villageWallId);
-          hud.notify('Muralha da vila e três portões construídos.');
+          hud.notify('Perímetro da vila construído.');
         }
       }
       break;
@@ -243,6 +263,15 @@ async function action(which,value) {
     case 'move': if(!guest)editor.moveSelected(); break;
     case 'rotate-object': if(!guest)editor.rotate(1); break;
     case 'delete': if(!guest)editor.remove(); break;
+    case 'upgrade-building':
+      if(!guest&&editor.selected){
+        const id=editor.selected.id;
+        if(editor.apply({kind:'upgrade-building',id})){
+          editor.select(id);
+          hud.notify(`Construção melhorada para o nível ${objectLevel(editor.selected)}.`);
+        }
+      }
+      break;
     case 'upgrade-walls':
     case 'upgrade-gate':
       if(!guest&&editor.selected){
@@ -271,6 +300,7 @@ async function action(which,value) {
     }
     case 'gate': firstGate(); break;
     case 'clear-selection': editor.select(null); break;
+    case 'production': hud.showProduction(active()); break;
     case 'settings': hud.showSettings(active(),slot,profile(),saves.online,saves.conflicted); break;
     case 'help': hud.showHelp(); break;
     case 'time': hud.showTime(active().time); break;
@@ -500,7 +530,13 @@ setInterval(async ()=>{
   if(ok&&saves.current?.pending&&!saves.conflicted)await saves.save(state);
 },18000);
 
+setInterval(()=>{
+  if(!document.hidden&&!locked)refreshEconomy();
+},15000);
+
 async function initialize() {
+  try{setEconomyRules(JSON.parse(localStorage.getItem(economyCache)));}catch{}
+  await refreshEconomy(initialEconomy);
   const loaded=await saves.load(slot,saveKind(slot));
   const initial=slot==='own'?upgradeStarter(loaded):loaded;
   await prepareModels(initial.objects);

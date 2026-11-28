@@ -1,3 +1,4 @@
+import { createEconomyStore } from './economy.js';
 import { createStore, worldSummary } from './store.js';
 import { validatedKingdom } from '../src/core/kingdom.js';
 import { catalogue } from '../src/core/catalog.js';
@@ -28,6 +29,7 @@ function send(response,status,data) {
 
 export function createApi(env=process.env) {
   const store = createStore(env);
+  const economy = createEconomyStore(env,store.economyCollection());
   const rooms = new Map();
   const prune = setInterval(()=>{
     const now=Date.now();
@@ -42,6 +44,24 @@ export function createApi(env=process.env) {
   async function handle(request,response) {
     const path = new URL(request.url,'http://localhost').pathname.replace(/^\/api(?=\/)/,'');
     const method = request.method, token = request.headers.authorization?.replace(/^Bearer /,'') || '';
+    if(path==='/economy'||path==='/admin/valdoria/economy'){
+      try{
+        const admin=path.startsWith('/admin/');
+        if(admin&&!economy.configured)return send(response,503,{error:'Configure VALDORIA_ADMIN_TOKEN no servidor.'});
+        if(admin&&!economy.authorized(token))return send(response,401,{error:'Token administrativo inválido.'});
+        if(method==='GET')return send(response,200,await economy.read());
+        if(admin&&method==='PUT'){
+          const saved=await economy.save(await body(request));
+          if(saved.invalid)return send(response,400,{error:'Revise os valores das regras da economia.'});
+          if(saved.conflict)return send(response,409,{error:'As regras mudaram em outra sessão. Recarregue antes de salvar.'});
+          return send(response,200,saved);
+        }
+        return send(response,405,{error:'Operação indisponível.'});
+      }catch(error){
+        if(error.name==='MongoServerSelectionError')return send(response,503,{error:'O MongoDB local está indisponível.'});
+        return send(response,error.status||500,{error:error.status?error.message:'Falha ao acessar as regras da economia.'});
+      }
+    }
     if (!known.test(path)) return send(response,404,{error:'Rota indisponível.'});
     try {
       let db = await store.getCollection();

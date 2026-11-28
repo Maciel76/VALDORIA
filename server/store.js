@@ -33,6 +33,7 @@ export function createStore(env) {
   }
   return {
     getCollection,
+    economyCollection:()=>client?client.db(env.MONGODB_DATABASE||'reino_valdoria').collection('game_settings'):null,
     async close() { if (client) await client.close(); },
     async profile(db,token) { return db.findOne({key:digest(token)}); },
     async register(db,token,alias) {

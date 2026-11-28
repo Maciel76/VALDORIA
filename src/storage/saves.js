@@ -24,8 +24,8 @@ export function profile() {
   try { return JSON.parse(localStorage.getItem(profileKey)); } catch { return null; }
 }
 export function setProfile(value) { localStorage.setItem(profileKey, JSON.stringify(value)); }
-export async function request(path, {method='GET',payload,token=profile()?.token}={}) {
-  const result = await fetch('/api'+path,{method,signal:AbortSignal.timeout(6000),headers:{
+export async function request(path, {method='GET',payload,token=profile()?.token,timeout=6000}={}) {
+  const result = await fetch('/api'+path,{method,signal:AbortSignal.timeout(timeout),headers:{
     ...(payload!==undefined?{'Content-Type':'application/json'}:{}),...(token?{Authorization:'Bearer '+token}:{})
   },...(payload!==undefined?{body:JSON.stringify(payload)}:{})});
   const data = await result.json();

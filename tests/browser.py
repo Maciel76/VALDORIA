@@ -7,6 +7,7 @@ import subprocess
 import time
 import urllib.request
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from playwright.sync_api import expect, sync_playwright
@@ -79,11 +80,19 @@ def action(page, name, scope=""):
 
 
 def assert_catalogue_centered(page):
-    catalogue = page.get_by_role("dialog", name="Construir")
+    catalogue = page.get_by_role("dialog", name="Catálogo do Reino")
     expect(catalogue).to_be_visible()
     box = catalogue.bounding_box()
     assert abs(box["x"] + box["width"] / 2 - page.viewport_size["width"] / 2) <= 1
     assert abs(box["y"] + box["height"] / 2 - page.viewport_size["height"] / 2) <= 1
+    categories = catalogue.get_by_role("navigation", name="Categorias do catálogo").bounding_box()
+    section = catalogue.locator(".catalogue-section").bounding_box()
+    if page.viewport_size["width"] > 620:
+        assert abs(categories["x"] + categories["width"] - section["x"]) <= 1
+        assert abs(categories["y"] - section["y"]) <= 1
+    else:
+        assert abs(categories["y"] + categories["height"] - section["y"]) <= 1
+    expect(catalogue.locator(".category-header").get_by_role("navigation")).to_be_visible()
 
 
 def assert_radial_selection(page, name, count=4):
@@ -96,6 +105,11 @@ def assert_radial_selection(page, name, count=4):
     )
     assert abs(ring["width"] - ring["height"]) <= 1
     x, y = ring["x"] + ring["width"] / 2, ring["y"] + ring["height"] / 2
+    card = selection.locator(".selection-card")
+    expect(card.get_by_role("heading", name=name, exact=True)).to_be_visible()
+    expect(card).to_contain_text("Nível 1")
+    panel = card.bounding_box()
+    assert hypot(panel["x"] + panel["width"] / 2 - x, panel["y"] + panel["height"] / 2 - y) <= 1
     for box in targets:
         assert box["x"] >= 0 and box["x"] + box["width"] <= page.viewport_size["width"]
         assert box["y"] >= 0 and box["y"] + box["height"] <= page.viewport_size["height"]
@@ -127,6 +141,7 @@ def assert_no_errors(issues):
 
 def offline(browser, address):
     context, page, issues = open_page(browser, address)
+    page.clock.set_fixed_time(datetime.now(timezone.utc))
     expect(page.locator("#gold")).to_have_text("1.500")
     starter = stored(page, "own")
     assert starter["territory"] == {"lots": []}
@@ -231,6 +246,20 @@ def offline(browser, address):
     catalogue_button = action(page, "catalogue", ".dock")
     catalogue_button.click()
     assert_catalogue_centered(page)
+    catalogue = page.locator("#catalogue")
+    expect(catalogue.get_by_role("button", name="Limpar área")).to_have_count(0)
+    catalogue.get_by_role("button", name="Campo e criação").click()
+    catalogue.get_by_role("button", name="Estábulos", exact=True).click()
+    expect(catalogue.locator('[data-item="stable"]')).to_be_visible()
+    expect(catalogue.locator('[data-item="farm"]')).to_have_count(0)
+    catalogue.get_by_role("button", name="Comércio e ofícios").click()
+    expect(catalogue.locator('[data-item="barrel"]')).to_have_count(0)
+    catalogue.get_by_role("button", name="Decorações").click()
+    catalogue.get_by_role("button", name="Objetos e acessórios").click()
+    expect(catalogue.locator('[data-item="barrel"]')).to_be_visible()
+    expect(catalogue.locator('[data-item="brazier"]')).to_have_count(0)
+    catalogue.get_by_role("button", name="Iluminação").click()
+    expect(catalogue.locator('[data-item="brazier"]')).to_be_visible()
     page.keyboard.press("Escape")
     expect(catalogue_button).to_have_attribute("aria-expanded", "false")
     catalogue_button.click()
@@ -271,6 +300,7 @@ def offline(browser, address):
 
     page.mouse.click(530, 360)
     x, y = assert_radial_selection(page, "Casebre de palha")
+    expect(page.locator(".selection-card")).to_contain_text("+9 ouro por ciclo")
     assert hypot(x-530, y-360) < 55
     page.mouse.move(795, 270)
     page.mouse.down(button="right")
@@ -393,6 +423,7 @@ def multiplayer(browser, address):
 
 def mobile_layout(browser, address):
     context, page, issues = open_page(browser, address, 390, 844, mobile=True)
+    page.clock.set_fixed_time(datetime.now(timezone.utc))
     action(page, "settings", ".game-tools").tap()
     action(page, "saves", "#panel").tap()
     page.locator('#panel [data-value="empty"]').tap()

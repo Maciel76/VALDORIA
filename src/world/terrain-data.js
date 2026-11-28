@@ -13,6 +13,7 @@ export const inWater = (x,z,seed) => Math.abs(x-riverX(z,seed)) < riverWidth(z) 
 export const waterLevel = -1.05;
 export const terrainBaseLevel = -3.7;
 export const terrainCellSize = 3;
+export const sceneryBands = 3;
 export const riverSurfaceWidth = z => riverWidth(z)*.54;
 export const bounds = territory => usesLots(territory)?lotBounds(territory):({
   minX: -BASE - BAND * territory.west, maxX: BASE + BAND * territory.east,
@@ -75,25 +76,43 @@ export function terrainHeight(x,z,seed,territory) {
   return (-2.5 + Math.min(1, Math.max(0, distance / 7)) * .8) * (1-edge) + (rolling+small) * edge * relief;
 }
 
-export function landHeight(x,z,seed,territory) {
+export function sceneryFade(x,z,edge) {
+  const distance=Math.max(edge.minX-x,x-edge.maxX,edge.minZ-z,z-edge.maxZ);
+  const t=Math.max(0,Math.min(1,(distance-BAND)/((sceneryBands-1)*BAND)));
+  return t*t*(3-2*t);
+}
+
+export function sceneryHeight(x,z,seed,territory,edge,fade=sceneryFade(x,z,edge)) {
+  const height=terrainHeight(x,z,seed,territory);
+  return height+(terrainBaseLevel-height)*fade;
+}
+
+function triangleHeight(x,z,heightAt) {
   const step=terrainCellSize;
   const x0=Math.floor(x/step)*step,z0=Math.floor(z/step)*step;
   const u=(x-x0)/step,v=(z-z0)/step;
-  const h10=terrainHeight(x0+step,z0,seed,territory);
-  const h01=terrainHeight(x0,z0+step,seed,territory);
+  const h10=heightAt(x0+step,z0);
+  const h01=heightAt(x0,z0+step);
   // Match the same triangle split as the PlaneGeometry used by the renderer.
   const land=u+v<=1
-    ? terrainHeight(x0,z0,seed,territory)*(1-u-v)+h10*u+h01*v
-    : terrainHeight(x0+step,z0+step,seed,territory)*(u+v-1)+h10*(1-v)+h01*(1-u);
+    ? heightAt(x0,z0)*(1-u-v)+h10*u+h01*v
+    : heightAt(x0+step,z0+step)*(u+v-1)+h10*(1-v)+h01*(1-u);
   return Math.max(terrainBaseLevel,land);
+}
+
+export function landHeight(x,z,seed,territory) {
+  return triangleHeight(x,z,(px,pz)=>terrainHeight(px,pz,seed,territory));
+}
+
+export function sceneryRiverWidth(z,edge) {
+  return riverSurfaceWidth(z)*(1-sceneryFade(0,z,edge));
 }
 
 export function visibleTerrainHeight(x,z,seed,territory) {
   const edge=terrainBounds(territory);
-  const px=Math.min(edge.maxX,Math.max(edge.minX,x));
-  const pz=Math.min(edge.maxZ,Math.max(edge.minZ,z));
-  const water=Math.abs(px-riverX(pz,seed))<riverSurfaceWidth(pz)?waterLevel:-Infinity;
-  return Math.max(landHeight(px,pz,seed,territory),water);
+  const water=Math.abs(x-riverX(z,seed))<sceneryRiverWidth(z,edge)?waterLevel:-Infinity;
+  const ground=triangleHeight(x,z,(px,pz)=>sceneryHeight(px,pz,seed,territory,edge));
+  return Math.max(ground,water);
 }
 
 export function landHeightRange({x,z,w,d},seed,territory) {

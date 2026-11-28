@@ -19,7 +19,9 @@ const server = createServer(async (req,res)=>{
     const pathname = decodeURIComponent(new URL(req.url,'http://localhost').pathname);
     if (pathname.startsWith('/api/')) return api.handle(req,res);
     if (!['GET','HEAD'].includes(req.method)) { res.writeHead(405).end(); return; }
-    const path = resolve(root, '.'+(pathname==='/'?'/index.html':pathname));
+    const page = pathname==='/'?'/index.html':
+      ['/admin/r/valdoria','/admin/r/valdoria/'].includes(pathname)?'/admin/r/valdoria/index.html':pathname;
+    const path=resolve(root,'.'+page);
     if (!path.startsWith(root.endsWith(sep)?root:root+sep)) { res.writeHead(404).end(); return; }
     const info = await stat(path).catch(()=>null);
     if (!info?.isFile()) { res.writeHead(404).end(); return; }

@@ -7,7 +7,8 @@ import { catalogue } from '../src/core/catalog.js';
 import { fortificationLevel,isVillageGate,isVillageWall,villageWallId } from '../src/core/fortifications.js';
 import { villageGatePositions,villagePerimeterBounds,villageWallSections,worldObjects } from '../src/world/perimeter.js';
 import { buildingFoundation, checkPlacement, containsPoint, footprint, landscapeObstacles, linePositions, objectHeight, supportHeight } from '../src/core/geometry.js';
-import { collectTax, economy, edit, emptyKingdom, expansionCost, upgradeStarter, validatedKingdom } from '../src/core/kingdom.js';
+import { collectTax, economy, edit, emptyKingdom, expansionCost, starterKingdom, upgradeStarter, validatedKingdom } from '../src/core/kingdom.js';
+import { buildingEconomy,defaultEconomyRules,setEconomyRules,validatedEconomyRules } from '../src/core/economy-rules.js';
 import { makeKingdom } from '../src/world/demo.js';
 import { BAND, BASE, bounds, expansionBounds, expansionOptions, inWater, landHeight, landscapeCell, riverX, terrainHeight, visibleTerrainHeight, waterLevel } from '../src/world/terrain-data.js';
 import { Terrain } from '../src/world/terrain-render.js';
@@ -19,6 +20,69 @@ import { KingdomCamera } from '../src/world/camera.js';
 const piece=(type,x,z,rotation=0,id=type,extra={})=>({id,type,x,z,rotation,...extra});
 const stateWith=(...objects)=>({...emptyKingdom(),objects});
 const legacyKingdom=()=>stateWith(piece('stockade',-14,-22,0,'v-0',{open:true,wallLevel:1}),piece('hut',8,10));
+
+test('regras publicadas afetam construção, melhoria, população, arrecadação e estoque',()=>{
+  const rules=defaultEconomyRules();
+  Object.assign(rules,{emptyGold:2000,harvestSeconds:10,residentGold:2,starterWall:false});
+  rules.buildings.hut=[
+    {cost:130,homes:4,jobs:1,gold:11,resource:'wood',quantity:3},
+    {cost:200,homes:7,jobs:2,gold:17,resource:'stone',quantity:8}
+  ];
+  try{
+    assert.equal(setEconomyRules(rules),true);
+    const newRealm=starterKingdom(1);
+    assert.equal(newRealm.objects.some(isVillageWall),false);
+    assert.ok(validatedKingdom(newRealm));
+    assert.equal(edit(newRealm,{kind:'buy-village-wall'}).error,undefined);
+    const state=emptyKingdom(10000);
+    const result=edit(state,{kind:'place',points:[piece('hut',0,0)]});
+    assert.equal(result.error,undefined);
+    assert.equal(state.gold,1870);
+    assert.equal(economy(state).income,24);
+    assert.equal(collectTax(state,20000),true);
+    assert.deepEqual(state.resources,{wood:3});
+    assert.equal(edit(state,{kind:'upgrade-building',id:result.objects[0].id}).error,undefined);
+    assert.equal(state.gold,1694);
+    assert.equal(economy(state).homes,7);
+    assert.equal(collectTax(state,30000),true);
+    assert.deepEqual(state.resources,{wood:3,stone:8});
+    assert.deepEqual(validatedKingdom(state),state);
+  }finally{setEconomyRules(defaultEconomyRules());}
+});
+
+test('ordem pública soma níveis e aplica bônus apenas a cada 100 pontos completos',()=>{
+  const rules=defaultEconomyRules();
+  rules.publicOrderBonus=5.5;
+  rules.buildings.hut=[{cost:100,homes:0,jobs:0,gold:200,resource:'wood',quantity:4,publicOrder:49}];
+  const bench={cost:20,homes:12,jobs:12,gold:80,resource:'wood',quantity:20,publicOrder:50};
+  rules.buildings.bench=[bench,{...bench,publicOrder:51}];
+  rules.buildings.statue=[{...bench,publicOrder:100}];
+  try{
+    assert.equal(setEconomyRules(rules),true);
+    const state=stateWith(piece('hut',0,0),piece('bench',6,0));
+    assert.deepEqual(economy(state),{homes:0,jobs:0,filled:0,income:200,publicOrder:99,bonusPercent:0,bonusGold:0,production:{wood:4}});
+    assert.equal(edit(state,{kind:'upgrade-building',id:'bench'}).error,undefined);
+    assert.equal(economy(state).publicOrder,100);
+    assert.equal(economy(state).income,211);
+    state.objects.push(piece('statue',9,0));
+    assert.equal(economy(state).bonusPercent,11);
+    assert.equal(economy(state).bonusGold,22);
+    assert.equal(collectTax(state,state.nextTaxAt),true);
+    assert.deepEqual(state.resources,{wood:4});
+    assert.equal(state.gold,5202);
+    assert.equal(buildingEconomy('bench',2).quantity,0);
+    assert.equal(validatedEconomyRules({...rules,publicOrderBonus:5.555}),null);
+  }finally{setEconomyRules(defaultEconomyRules());}
+});
+
+test('regras salvas antes da ordem pública continuam válidas',()=>{
+  const rules=defaultEconomyRules();
+  delete rules.publicOrderBonus;
+  rules.buildings.bench=[{cost:20,homes:2,jobs:3,gold:4,resource:'wood',quantity:7}];
+  const migrated=validatedEconomyRules(rules);
+  assert.equal(migrated.publicOrderBonus,0);
+  assert.deepEqual(migrated.buildings.bench,[{cost:20,homes:0,jobs:0,gold:0,resource:'',quantity:0,publicOrder:10}]);
+});
 
 test('catálogo tem todas as construções, fortificações, decorações e brasões',()=>{
   const count=group=>Object.values(catalogue).filter(item=>item.category===group).length;
@@ -443,7 +507,7 @@ test('cobrança, saldo insuficiente, expansão e arrecadação sobrevivem ao rec
   let operation=edit(kingdom,{kind:'place',points:[piece('peasant',0,0),piece('smith',12,0)]});
   assert.equal(operation.error,undefined);
   assert.equal(kingdom.gold,4550);
-  assert.deepEqual(economy(kingdom),{homes:5,jobs:5,filled:5,income:40});
+  assert.deepEqual(economy(kingdom),{homes:5,jobs:5,filled:5,income:40,publicOrder:0,bonusPercent:0,bonusGold:0});
   const cost=expansionCost(kingdom,'north');
   operation=edit(kingdom,{kind:'expand',direction:'north'});
   assert.equal(bounds(kingdom.territory).minZ,-216);
@@ -531,7 +595,8 @@ test('a altura visível do terreno acompanha as duas faces da malha e as regiõe
   scene.updateMatrixWorld(true);
   const ground=terrain.root.children.filter(mesh=>mesh.geometry?.type==='PlaneGeometry');
   const ray=new Raycaster();
-  for(const [x,z] of [[-119.2,104.4],[-117.9,105.7],[101.4,-136.8],[179.3,45.6],[195.2,46.8]]){
+  for(const [x,z] of [[-119.2,104.4],[-117.9,105.7],[101.4,-136.8],[179.3,45.6],[195.2,46.8],
+    [251.8,46.8],[252.2,46.8],[279.4,46.8],[323.8,46.8],[324.2,46.8]]){
     ray.set(new Vector3(x,100,z), new Vector3(0,-1,0));
     const height=ray.intersectObjects(ground,false)[0].point.y;
     assert.ok(Math.abs(height-visibleTerrainHeight(x,z,state.seed,state.territory))<.0001);
@@ -587,6 +652,20 @@ test('a câmera respeita o terreno em órbita, voo e caminhada',t=>{
   verify();
   navigation.setMode('free',state);
   assert.ok(camera.position.distanceTo(beforeWalk)<.0001);
+  for(const mode of ['orbit','free']){
+    navigation.setMode(mode,state);
+    navigation.snap([175,8,0],[203,11,0]);
+    const closeView=camera.position.clone();
+    const closeDistance=navigation.orbit.getDistance();
+    const orbitAngle=navigation.orbit.getPolarAngle();
+    navigation.zoom(100);
+    assert.ok(camera.position.distanceTo(navigation.orbit.target)>1000);
+    assert.ok(camera.position.y-navigation.orbit.target.y>800);
+    assert.ok(Math.abs(navigation.orbit.getPolarAngle()-orbitAngle)<.0001);
+    verify();
+    navigation.zoom(closeDistance/navigation.orbit.getDistance());
+    assert.ok(camera.position.distanceTo(closeView)<.0001);
+  }
 });
 
 test('demonstração determinística e validação do formato rejeitam dados corrompidos',()=>{

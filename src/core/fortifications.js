@@ -1,3 +1,5 @@
+import { buildingEconomy } from './economy-rules.js';
+
 export const villageWallId = 'village-wall';
 export const villageGateNames = {'per-4':'Portão sul','per-5':'Portão leste','per-6':'Portão oeste'};
 
@@ -24,9 +26,8 @@ export const fortificationLevel = object => object.wallLevel ?? 1;
 export function fortificationUpgradeCost(object) {
   const role=fortificationRole(object);
   if(!role||fortificationLevel(object)!==1)return null;
-  if(role==='village-wall')return 850;
-  if(isVillageGate(object))return 250;
-  if(role==='castle')return 450;
-  if(object.type==='palisade')return 36;
+  if(role==='village-wall'||isVillageGate(object)||role==='castle'||object.type==='palisade'){
+    return buildingEconomy(object.type,2).cost;
+  }
   return null;
 }

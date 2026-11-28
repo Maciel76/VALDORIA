@@ -1,3 +1,4 @@
+import { buildingEconomy,objectLevel } from '../core/economy-rules.js';
 import * as THREE from 'three';
 import { catalogue } from '../core/catalog.js';
 import { castleTypes, containsPoint, worldBoxes, angleOf } from '../core/geometry.js';
@@ -27,13 +28,14 @@ export function makeRouteGraph(state, blocked) {
   const terminals = [];
   for(const object of state.objects) {
     const item=catalogue[object.type];
+    const rule=buildingEconomy(object.type,objectLevel(object));
     if(item.category==='roads'){
       add(object.x,object.z,false,true);
       if(item.id==='bridge')for(let m=-8;m<=8;m+=2) {
         const a=angleOf(object.rotation);
         add(object.x+Math.sin(a)*m,object.z+Math.cos(a)*m,false,true);
       }
-    } else if(item.jobs || item.homes){
+    } else if(rule.jobs || rule.homes){
       const entry=worldBoxes(object,[{x:0,z:item.d*.5+.53,w:1,d:1}])[0];
       const nearer=worldBoxes(object,[{x:0,z:item.d*.43,w:1,d:1}])[0];
       terminals.push({...entry,closer:nearer,type:object.type});
@@ -227,7 +229,7 @@ export class Traffic {
       this.people=[];
     }
     if(paused || !this.nodes.length)return;
-    const houses=objects.filter(o=>catalogue[o.type].homes).length;
+    const houses=objects.filter(o=>buildingEconomy(o.type,objectLevel(o)).homes).length;
     const count=houses?Math.min(state.quality==='low'?8:18,Math.max(6,houses*2+4)):0;
     for(const person of this.people.splice(count))person.p.removeFromParent();
     for(let i=0;i<count;i++){

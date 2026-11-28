@@ -2,7 +2,7 @@ import { onVillagePerimeter } from './perimeter.js';
 import * as THREE from 'three';
 import { BAND,terrainBounds,inWater,insideTerritory,outsideOriginalTerritory,terrainHeight,landscapeCell,
   ownedLandscapeCell,random,riverX,riverWidth,waterLevel,terrainBaseLevel,terrainCellSize,
-  riverSurfaceWidth,landscapeCellKey } from './terrain-data.js';
+  riverSurfaceWidth,landscapeCellKey,sceneryBands,sceneryFade,sceneryHeight,sceneryRiverWidth } from './terrain-data.js';
 import { group,cyl,ball } from '../models/kit.js';
 import { lotAt,lotRectangle,ownsLot,usesLots } from './lots.js';
 
@@ -76,7 +76,7 @@ function outline(edge,seed,territory,color,opacity) {
   return line;
 }
 
-function patch(cx,cz,seed,territory) {
+function patch(cx,cz,seed,territory,edge) {
   const size=BAND,n=size/terrainCellSize;
   const g=new THREE.PlaneGeometry(size,size,n,n);
   g.rotateX(-Math.PI/2);
@@ -84,8 +84,10 @@ function patch(cx,cz,seed,territory) {
   const positions=g.attributes.position, colors=new Float32Array(positions.count*3);
   for(let i=0;i<positions.count;i++){
     const x=positions.getX(i),z=positions.getZ(i);
-    positions.setY(i,terrainHeight(x,z,seed,territory));
+    const fade=sceneryFade(x,z,edge);
+    positions.setY(i,sceneryHeight(x,z,seed,territory,edge,fade));
     turfVertexColor(x,z,seed,color);
+    color.lerp(plain.color,fade);
     color.toArray(colors,i*3);
   }
   g.setAttribute('color',new THREE.Float32BufferAttribute(colors,3));
@@ -111,7 +113,7 @@ function instances(scene, prototype, placements, {shadow=true}={}) {
   return result;
 }
 
-function plantRegion(container,plants,seed,territory,detailSeed,removedLandscape,owned) {
+function plantRegion(container,plants,seed,territory,detailSeed,removedLandscape,owned,distantEdge) {
   for(const mesh of container.children)mesh.dispose();
   container.clear();
   const trunks=[],pines=[],oaks=[],stones=[];
@@ -121,7 +123,7 @@ function plantRegion(container,plants,seed,territory,detailSeed,removedLandscape
     const detail=rng();
     if(owned&&removedLandscape.has(p.id))continue;
     visible.push(p);
-    const y=terrainHeight(p.x,p.z,seed,territory),s=p.size;
+    const y=distantEdge?sceneryHeight(p.x,p.z,seed,territory,distantEdge):terrainHeight(p.x,p.z,seed,territory),s=p.size;
     if(p.type==='rock'){
       stones.push({...p,y:y+.22*s,sx:.93*s,sy:s*.62,sz:s*.75,color:detail>.65?'#908d77':'#777c6b'});
       continue;
@@ -140,7 +142,7 @@ function plantRegion(container,plants,seed,territory,detailSeed,removedLandscape
   }
   const obstacleMeshes=[];
   for(const [prototype,placements] of [[trunk,trunks],[conifer,pines],[broadleaf,oaks],[stone,stones]]){
-    const mesh=instances(container,prototype,placements);
+    const mesh=instances(container,prototype,placements,{shadow:!distantEdge});
     if(mesh&&owned){
       mesh.userData.obstacleIds=placements.map(p=>p.id);
       obstacleMeshes.push(mesh);
@@ -161,18 +163,18 @@ waterMaterial.onBeforeCompile=shader=>{
 };
 const foam = new THREE.MeshBasicMaterial({color:'#b1d0ad',transparent:true,opacity:.31,depthWrite:false});
 
-function river(scene,minZ,maxZ,seed) {
+function river(scene,edge,seed) {
   const vertices=[],indices=[];
-  const edge = [[],[]];
-  for(let z=minZ;z<=maxZ;z+=2){
-    const x=riverX(z,seed),w=riverSurfaceWidth(z);
+  const banks = [[],[]];
+  for(let z=edge.minZ-sceneryBands*BAND;z<=edge.maxZ+sceneryBands*BAND;z+=2){
+    const x=riverX(z,seed),w=sceneryRiverWidth(z,edge);
     const index=vertices.length/3;
     vertices.push(x-w,waterLevel,z,x+w,waterLevel,z);
     if(index>0)indices.push(index-2,index,index-1,index,index+1,index-1);
-    for(const [i,sign] of [-1,1].entries()) if(Math.round(z/2)%8<5){
+    for(const [i,sign] of [-1,1].entries()) if(w>2&&Math.round(z/2)%8<5){
       const side=x+(w-.48)*sign;
       const off=i*.025;
-      edge[i].push(side,waterLevel+.021+off,z,side+sign*.17,waterLevel+.021+off,z,side+.20,waterLevel+.021+off,z+1.9);
+      banks[i].push(side,waterLevel+.021+off,z,side+sign*.17,waterLevel+.021+off,z,side+.20,waterLevel+.021+off,z+1.9);
     }
   }
   const geometry=new THREE.BufferGeometry();
@@ -181,7 +183,7 @@ function river(scene,minZ,maxZ,seed) {
   const stream=new THREE.Mesh(geometry,waterMaterial);
   stream.receiveShadow=true;
   scene.add(stream);
-  for(const positions of edge){
+  for(const positions of banks){
     const geometry=new THREE.BufferGeometry();
     geometry.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));
     scene.add(new THREE.Mesh(geometry,foam));
@@ -225,18 +227,23 @@ export class Terrain {
     const {minX,maxX,minZ,maxZ}=edge;
     this.vegetation=new Map();
     // Group vegetation by region for frustum culling and walking collision lookup.
-    for(let cz=minZ/BAND-1;cz<=maxZ/BAND;cz++){
-      for(let cx=minX/BAND-1;cx<=maxX/BAND;cx++){
-        root.add(patch(cx,cz,seed,territory));
+    for(let cz=minZ/BAND-sceneryBands;cz<maxZ/BAND+sceneryBands;cz++){
+      for(let cx=minX/BAND-sceneryBands;cx<maxX/BAND+sceneryBands;cx++){
+        root.add(patch(cx,cz,seed,territory,edge));
+        const distant=sceneryFade((cx+.5)*BAND,(cz+.5)*BAND,edge)>0;
         const owned=!compact&&insideTerritory((cx+.5)*BAND,(cz+.5)*BAND,edge);
-        const plants=compact?landscapeCell(cx,cz,seed).filter(p=>!ownsLot(territory,lotAt(p.x,p.z))):owned
-          ? ownedLandscapeCell(cx,cz,seed,edge).filter(p=>!enclosed||
-            !onVillagePerimeter(p.x,p.z,territory,p.collider+2.4))
-          : landscapeCell(cx,cz,seed).filter(p=>vegetationAtEdge(p,edge));
+        const detailSeed=seed+cx*11273+cz*41481;
+        let plants=owned?ownedLandscapeCell(cx,cz,seed,edge).filter(p=>!enclosed||
+          !onVillagePerimeter(p.x,p.z,territory,p.collider+2.4)):landscapeCell(cx,cz,seed).filter(p=>
+          compact?!ownsLot(territory,lotAt(p.x,p.z)):vegetationAtEdge(p,edge));
+        if(distant){
+          const rng=random(detailSeed);
+          plants=plants.filter(p=>rng()>sceneryFade(p.x,p.z,edge));
+        }
         if(plants.length){
-          const container=group(root),detailSeed=seed+cx*11273+cz*41481;
-          const region=plantRegion(container,plants,seed,territory,detailSeed,removed,owned);
-          if(owned||compact)this.vegetation.set(cx+','+cz,{...region,container,plants,detailSeed,owned});
+          const container=group(root);
+          const region=plantRegion(container,plants,seed,territory,detailSeed,removed,owned,distant?edge:null);
+          if(owned||(compact&&!distant))this.vegetation.set(cx+','+cz,{...region,container,plants,detailSeed,owned});
         }
       }
     }
@@ -255,10 +262,10 @@ export class Terrain {
     for(const {grass,flowers} of groundCover.values()){
       instances(root,conifer,grass,{shadow:false});instances(root,broadleaf,flowers,{shadow:false});
     }
-    const skirt=new THREE.Mesh(new THREE.PlaneGeometry(1600,1600),plain);
+    const skirt=new THREE.Mesh(new THREE.PlaneGeometry(12000,12000),plain);
     skirt.rotation.x=-Math.PI/2;skirt.position.y=terrainBaseLevel;skirt.receiveShadow=true;
     root.add(skirt);
-    river(root,minZ-120,maxZ+120,seed);
+    river(root,edge,seed);
     this.border=outline(edge,seed,territory,'#f9dc97',.76);
     this.border.visible=false;root.add(this.border);
     this.waterSeed=seed;
